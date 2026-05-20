@@ -565,11 +565,14 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback }) {
       </div>
 
       {/* 不具合報告 */}
-      <div style={{ textAlign:'center', marginTop:24 }}>
+      <div style={{ textAlign:'center', marginTop:24, display:'flex', justifyContent:'center', gap:16 }}>
         <button onClick={onFeedback} style={{
           background:'none', border:'none', color:'#6b7280', fontSize:12, cursor:'pointer',
           textDecoration:'underline'
         }}>不具合を報告する</button>
+        <a href="privacy.html" style={{ color:'#6b7280', fontSize:12, textDecoration:'underline' }}>
+          プライバシーポリシー
+        </a>
       </div>
     </div>
   );
