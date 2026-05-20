@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>麻雀一向聴クイズ</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #1a1a2e; font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+function formatTime(ms) { return (ms / 1000).toFixed(1) + '秒'; }
+
+// ===== 定数 =====
+const MAN   = ['1m','2m','3m','4m','5m','6m','7m','8m','9m'];
+const PIN   = ['1p','2p','3p','4p','5p','6p','7p','8p','9p'];
+const SOU   = ['1s','2s','3s','4s','5s','6s','7s','8s','9s'];
+const HONOR = ['ton','nan','sha','pei','haku','hatsu','chun'];
+const ALL_TILES = [...MAN, ...PIN, ...SOU, ...HONOR];
+const MAX_Q = { normal: 5, chiitsu: 5 };
+const KOKUSHI_TILES = ['1m','9m','1p','9p','1s','9s','ton','nan','sha','pei','haku','hatsu','chun'];
+const TILE_NAMES = {
+  '1m':'一萬','2m':'二萬','3m':'三萬','4m':'四萬','5m':'五萬','6m':'六萬','7m':'七萬','8m':'八萬','9m':'九萬',
+  '1p':'一筒','2p':'二筒','3p':'三筒','4p':'四筒','5p':'五筒','6p':'六筒','7p':'七筒','8p':'八筒','9p':'九筒',
+  '1s':'一索','2s':'二索','3s':'三索','4s':'四索','5s':'五索','6s':'六索','7s':'七索','8s':'八索','9s':'九索',
+  'ton':'東','nan':'南','sha':'西','pei':'北','haku':'白','hatsu':'発','chun':'中',
+};
+
+// ===== インデックス変換 =====
+function tileIdx(t) { return ALL_TILES.indexOf(t); }
+
+// ===== ユーティリティ =====
+function rand(n) { return Math.floor(Math.random() * n); }
+function choice(arr) { return arr[rand(arr.length)]; }
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rand(i + 1); [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ===== 向聴数計算 =====
+function countArr(hand) {
+  const c = new Int8Array(34);
+  for (const t of hand) c[tileIdx(t)]++;
+  return c;
+}
+
+function mentsuSub(c, m, t) {
+  if (m + t >= 4) return 8 - 2*m - t;
+  let best = 8 - 2*m - t;
+  for (let i = 0; i < 34; i++) {
+    if (c[i] === 0) continue;
+    const suit = Math.floor(i / 9), pos = i % 9;
+    if (c[i] >= 3) {
+      c[i] -= 3;
+      best = Math.min(best, mentsuSub(c, m+1, t));
+      c[i] += 3;
+    }
+    if (suit < 3 && pos <= 6 && c[i+1] > 0 && c[i+2] > 0) {
+      c[i]--; c[i+1]--; c[i+2]--;
+      best = Math.min(best, mentsuSub(c, m+1, t));
+      c[i]++; c[i+1]++; c[i+2]++;
+    }
+    if (c[i] >= 2) {
+      c[i] -= 2;
+      best = Math.min(best, mentsuSub(c, m, t+1));
+      c[i] += 2;
+    }
+    if (suit < 3 && pos <= 7 && c[i+1] > 0) {
+      c[i]--; c[i+1]--;
+      best = Math.min(best, mentsuSub(c, m, t+1));
+      c[i]++; c[i+1]++;
+    }
+    if (suit < 3 && pos <= 6 && c[i+2] > 0) {
+      c[i]--; c[i+2]--;
+      best = Math.min(best, mentsuSub(c, m, t+1));
+      c[i]++; c[i+2]++;
+    }
+    const save = c[i]; c[i] = 0;
+    best = Math.min(best, mentsuSub(c, m, t));
+    c[i] = save;
+    break;
+  }
+  return best;
+}
+
+function normalShanten(hand) {
+  const c = countArr(hand);
+  let best = mentsuSub(new Int8Array(c), 0, 0);
+  for (let i = 0; i < 34; i++) {
+    if (c[i] >= 2) {
+      const tmp = new Int8Array(c);
+      tmp[i] -= 2;
+      best = Math.min(best, mentsuSub(tmp, 0, 0) - 1);
+    }
+  }
+  return best;
+}
+
+function chiitoiShanten(hand) {
+  const seen = {};
+  for (const t of hand) seen[t] = (seen[t] || 0) + 1;
+  let pairs = 0;
+  for (const cnt of Object.values(seen)) if (cnt >= 2) pairs++;
+  return 6 - pairs;
+}
+
+function kokushiShanten(hand) {
+  const seen = {};
+  for (const t of hand) seen[t] = (seen[t] || 0) + 1;
+  let kinds = 0, hasDouble = false;
+  for (const t of KOKUSHI_TILES) {
+    if (seen[t]) { kinds++; if (seen[t] >= 2) hasDouble = true; }
+  }
+  return 13 - kinds - (hasDouble ? 1 : 0);
+}
+
+function shanten(hand) {
+  return Math.min(normalShanten(hand), chiitoiShanten(hand), kokushiShanten(hand));
+}
+function isIishanten(hand) { return shanten(hand) === 1; }
+function isTenpai(hand)    { return shanten(hand) === 0; }
+
+// ===== 受け入れ牌算出 =====
+function calcAccepts(hand13, availableTiles) {
+  const cnt = {};
+  for (const t of hand13) cnt[t] = (cnt[t] || 0) + 1;
+  return availableTiles.filter(t => (cnt[t] || 0) < 4 && isTenpai([...hand13, t]));
+}
+
+// ===== 待ち牌計算（引いた牌に対して最善の捨て牌と待ちを返す）=====
+function getWaitsAfterDraw(hand13, drawnTile) {
+  const h14 = [...hand13, drawnTile];
+  const seen = new Set();
+  const options = [];
+  for (const d of h14) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    const h13 = [...h14];
+    h13.splice(h13.indexOf(d), 1);
+    if (shanten(h13) !== 0) continue; // テンパイでなければスキップ
+    const cnt = {};
+    for (const x of h13) cnt[x] = (cnt[x] || 0) + 1;
+    const waits = ALL_TILES.filter(t => (cnt[t] || 0) < 4 && shanten([...h13, t]) === -1);
+    if (waits.length > 0) options.push({ discard: d, waits });
+  }
+  options.sort((a, b) => b.waits.length - a.waits.length);
+  return options;
+}
+
+// ===== 解説生成 =====
+function explainAccept(tile, hand13) {
+  const cn = TILE_NAMES[tile];
+  const h14 = [...hand13, tile];
+  if (kokushiShanten(h14) === 0) return `${cn}を引くと国士無双のテンパイになります`;
+
+  const options = getWaitsAfterDraw(hand13, tile);
+  if (options.length === 0) return `${cn}を引くとテンパイになります`;
+
+  // 待ちパターンが同じ捨て牌をまとめる
+  const groups = [];
+  for (const opt of options) {
+    const key = opt.waits.join(',');
+    const existing = groups.find(g => g.key === key);
+    if (existing) existing.discards.push(opt.discard);
+    else groups.push({ key, waits: opt.waits, discards: [opt.discard] });
+  }
+  groups.sort((a, b) => b.waits.length - a.waits.length);
+
+  if (groups.length === 1) {
+    const g = groups[0];
+    const discardStr = g.discards.map(d => TILE_NAMES[d]).join('か');
+    const waitStr = g.waits.map(t => TILE_NAMES[t]).join('・');
+    return `${cn}を引いて${discardStr}を切ると${waitStr}待ちのテンパイになります`;
+  }
+
+  // 捨て牌によって待ちが変わる場合は全パターンを列挙
+  const parts = groups.map(g => {
+    const discardStr = g.discards.map(d => TILE_NAMES[d]).join('か');
+    const waitStr = g.waits.map(t => TILE_NAMES[t]).join('・');
+    return `${discardStr}切り→${waitStr}待ち`;
+  });
+  return `${cn}を引くとテンパイ（${parts.join('、')}）`;
+}
+
+// ===== 手牌生成 =====
+function makeHandCounts(tiles) {
+  const m = {};
+  for (const t of tiles) m[t] = (m[t] || 0) + 1;
+  return m;
+}
+function isValid(hand) {
+  const m = makeHandCounts(hand);
+  return Object.values(m).every(c => c <= 4);
+}
+
+function generateNormalHand(pool) {
+  const numSuits = [MAN, PIN, SOU].filter(s => s.some(t => pool.includes(t)));
+  if (numSuits.length === 0) return null;
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const suit = () => choice(numSuits).filter(t => pool.includes(t));
+    const addMentsu = () => {
+      const s = suit();
+      if (rand(2) === 0) { const t = choice(s); return [t, t, t]; }
+      for (let i = 0; i < 30; i++) {
+        const t = choice(s), n = parseInt(t), su = t.slice(-1);
+        const t2 = `${n+1}${su}`, t3 = `${n+2}${su}`;
+        if (n <= 7 && pool.includes(t2) && pool.includes(t3)) return [t, t2, t3];
+      }
+      const t = choice(s); return [t, t, t];
+    };
+    const addTatsu = () => {
+      const s = suit();
+      const type = rand(3);
+      if (type === 0) { const t = choice(s); return [t, t]; }
+      for (let i = 0; i < 30; i++) {
+        const t = choice(s), n = parseInt(t), su = t.slice(-1);
+        if (type === 1 && n <= 8 && pool.includes(`${n+1}${su}`)) return [t, `${n+1}${su}`];
+        if (type === 2 && n <= 7 && pool.includes(`${n+2}${su}`)) return [t, `${n+2}${su}`];
+      }
+      const t = choice(s); return [t, t];
+    };
+    let tiles;
+    try {
+      const tpl = rand(4);
+      switch (tpl) {
+        case 0: tiles = [...addMentsu(),...addMentsu(),...addMentsu(),...addTatsu(), choice(pool), choice(pool)]; break;
+        case 1: { const jt = choice(pool); tiles = [...addMentsu(),...addMentsu(),...addMentsu(), jt, jt, choice(pool), choice(pool)]; break; }
+        case 2: { const jt = choice(pool); tiles = [...addMentsu(),...addMentsu(),...addTatsu(),...addTatsu(), jt, jt, choice(pool)]; break; }
+        default: tiles = [...addMentsu(),...addMentsu(),...addTatsu(),...addTatsu(),...addTatsu(), choice(pool)]; break;
+      }
+    } catch(e) { continue; }
+    if (!tiles || tiles.length !== 13) continue;
+    const cnt = {};
+    for (const t of tiles) cnt[t] = (cnt[t] || 0) + 1;
+    if (Object.values(cnt).some(c => c > 4)) continue;
+    if (isIishanten(tiles)) return tiles;
+  }
+  return null;
+}
+
+function generateChiitoiHand(pool) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const shuffled = shuffle([...pool]);
+    const pairs = [], used = {};
+    for (const t of shuffled) {
+      if (!used[t] && pairs.length < 12) { pairs.push(t, t); used[t] = true; }
+    }
+    if (pairs.length < 12) continue;
+    const lone = shuffled.find(t => !used[t]);
+    if (!lone) continue;
+    const hand = [...pairs, lone];
+    if (hand.length === 13 && chiitoiShanten(hand) === 1) return hand;
+  }
+  return null;
+}
+
+function generateKokushiHand() {
+  const idx = rand(13);
+  const hand = KOKUSHI_TILES.filter((_, i) => i !== idx);
+  const extra = choice(KOKUSHI_TILES.filter((_, i) => i !== idx));
+  hand.push(extra);
+  if (isIishanten(hand)) return hand;
+  return null;
+}
+
+function generatePool(mode, size = 80) {
+  const pool = mode === 'chiitsu' ? choice([MAN, PIN, SOU]) : ALL_TILES;
+  const results = [];
+  let tries = 0;
+  while (results.length < size && tries < 2000) {
+    tries++;
+    const type = mode === 'chiitsu'
+      ? 'normal'
+      : choice(['normal','normal','normal','chiitoi','kokushi']);
+    let hand = null;
+    if (type === 'chiitoi') hand = generateChiitoiHand(pool);
+    else if (type === 'kokushi') hand = generateKokushiHand();
+    else hand = generateNormalHand(pool);
+    if (hand) results.push({ hand, pool });
+  }
+  return shuffle(results);
+}
+
+// ===== ランキング =====
+function todayStr() { return new Date().toISOString().slice(0,10).replace(/-/g,''); }
+function getRankings(mode) {
+  try { return JSON.parse(localStorage.getItem(`mj_rank_${mode}_${todayStr()}`) || '[]'); }
+  catch { return []; }
+}
+function saveRanking(mode, name, correct, totalMs) {
+  const key = `mj_rank_${mode}_${todayStr()}`;
+  const list = getRankings(mode);
+  list.push({ name: name || 'プレイヤー', correct, totalMs });
+  list.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
+  localStorage.setItem(key, JSON.stringify(list.slice(0, 10)));
+}
+
+// ===== コンポーネント =====
+function TileImg({ tile, size = 52, onClick, style }) {
+  return (
+    <img
+      src={`public/tiles/${tile}.svg`}
+      alt={TILE_NAMES[tile]}
+      title={TILE_NAMES[tile]}
+      width={size} height={size}
+      onClick={onClick}
+      style={{
+        cursor: onClick ? 'pointer' : 'default',
+        userSelect: 'none',
+        borderRadius: 4,
+        border: '2px solid #555',
+        boxShadow: '1px 2px 4px rgba(0,0,0,0.5)',
+        background: '#fff',
+        display: 'block',
+        ...style
+      }}
+    />
+  );
+}
+
+function HandArea({ hand }) {
+  const sorted = [...hand].sort((a,b) => tileIdx(a) - tileIdx(b));
+  return (
+    <div style={{ display:'flex', flexWrap:'nowrap', justifyContent:'center', gap:2,
+                  padding:'8px 6px', background:'#14532d', borderRadius:12, border:'2px solid #166534' }}>
+      {sorted.map((t,i) => <TileImg key={i} tile={t} size={42}/>)}
+    </div>
+  );
+}
+
+function SelectArea({ availableTiles, selected, onToggle, result }) {
+  const groups = [];
+  if (availableTiles.some(t => MAN.includes(t)))   groups.push({ label:'萬子', tiles: MAN.filter(t => availableTiles.includes(t)) });
+  if (availableTiles.some(t => PIN.includes(t)))   groups.push({ label:'筒子', tiles: PIN.filter(t => availableTiles.includes(t)) });
+  if (availableTiles.some(t => SOU.includes(t)))   groups.push({ label:'索子', tiles: SOU.filter(t => availableTiles.includes(t)) });
+  if (availableTiles.some(t => HONOR.includes(t))) groups.push({ label:'字牌', tiles: HONOR.filter(t => availableTiles.includes(t)) });
+
+  function getBorder(tile) {
+    if (!result) return selected.has(tile) ? '3px solid #facc15' : '3px solid transparent';
+    const ok = result.accepts.includes(tile), sel = selected.has(tile);
+    if (ok && sel)  return '3px solid #4ade80';
+    if (ok && !sel) return '3px solid #fde047';
+    if (!ok && sel) return '3px solid #f87171';
+    return '3px solid transparent';
+  }
+  function getOpacity(tile) {
+    if (!result) return selected.has(tile) ? 1 : 0.75;
+    const ok = result.accepts.includes(tile), sel = selected.has(tile);
+    return (ok || sel) ? 1 : 0.35;
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+      {groups.map(({ label, tiles }) => (
+        <div key={label} style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <span style={{ color:'#9ca3af', fontSize:11, width:30, flexShrink:0 }}>{label}</span>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:3 }}>
+            {tiles.map(t => (
+              <div key={t} style={{ borderRadius:6, border: getBorder(t), transition:'border 0.15s', opacity: getOpacity(t) }}>
+                <TileImg tile={t} size={44} onClick={result ? undefined : () => onToggle(t)} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ResultPanel({ result, hand13, onNext, isLast }) {
+  const { correct, accepts, timeMs } = result;
+  return (
+    <div style={{
+      borderRadius:12, padding:16, border: `2px solid ${correct ? '#22c55e' : '#ef4444'}`,
+      background: correct ? '#14532d' : '#7f1d1d'
+    }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:12, marginBottom:12 }}>
+        <div style={{ fontSize:22, fontWeight:'bold' }}>{correct ? '✅ 正解！' : '❌ 不正解'}</div>
+        <div style={{ fontSize:13, color:'#9ca3af', background:'rgba(0,0,0,0.3)', borderRadius:6, padding:'3px 10px' }}>
+          ⏱ {formatTime(timeMs)}
+        </div>
+      </div>
+      <div style={{ fontSize:13, color:'#d1d5db', marginBottom:6, fontWeight:'bold' }}>正解の受け入れ牌：</div>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:12 }}>
+        {accepts.map(t => (
+          <div key={t} style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+            <TileImg tile={t} size={40}/>
+            <span style={{ fontSize:10, color:'#d1d5db', marginTop:2 }}>{TILE_NAMES[t]}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:4, marginBottom:14,
+                    maxHeight:140, overflowY:'auto', paddingRight:4 }}>
+        {accepts.map(t => (
+          <div key={t} style={{ fontSize:11, color:'#e5e7eb', background:'rgba(0,0,0,0.3)', borderRadius:6, padding:'4px 8px', flexShrink:0 }}>
+            {explainAccept(t, hand13)}
+          </div>
+        ))}
+      </div>
+      <button onClick={onNext} style={{
+        width:'100%', padding:'10px 0', background: isLast ? '#16a34a' : '#2563eb',
+        color:'white', fontWeight:'bold', fontSize:15, borderRadius:8, border:'none', cursor:'pointer'
+      }}>
+        {isLast ? 'クイズを終了する ✓' : '次の問題へ →'}
+      </button>
+    </div>
+  );
+}
+
+// ===== 不具合報告モーダル =====
+function FeedbackModal({ onClose, mode, score, hand13 }) {
+  const [text, setText] = useState('');
+  function handleSend() {
+    const subject = encodeURIComponent('麻雀一向聴クイズ：不具合報告');
+    const infoLines = [
+      `モード: ${mode === 'chiitsu' ? '清一色' : '通常'}`,
+      `スコア: ${score.correct}/${score.total}`,
+    ];
+    if (hand13.length > 0) {
+      infoLines.push(`現在の手牌: ${[...hand13].sort((a,b) => tileIdx(a)-tileIdx(b)).join(' ')}`);
+    }
+    const body = encodeURIComponent(
+      `【不具合の内容】\n${text}\n\n【環境情報】\n${infoLines.join('\n')}`
+    );
+    window.location.href = `mailto:takebe.f.0514@gmail.com?subject=${subject}&body=${body}`;
+    onClose();
+  }
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.75)',
+                  display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000 }}>
+      <div style={{ background:'#1f2937', borderRadius:16, padding:24, width:'90%', maxWidth:400 }}>
+        <div style={{ fontSize:18, fontWeight:'bold', marginBottom:4 }}>不具合を報告</div>
+        <div style={{ fontSize:12, color:'#9ca3af', marginBottom:12 }}>
+          手牌情報や操作手順など、気づいたことをご記入ください
+        </div>
+        <textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder="例：この手牌で〇〇の牌が受け入れに出てこなかった..."
+          style={{ width:'100%', minHeight:110, background:'#374151', color:'white',
+                   border:'1px solid #4b5563', borderRadius:8, padding:8, fontSize:13,
+                   resize:'vertical', boxSizing:'border-box', outline:'none' }}
+        />
+        <div style={{ display:'flex', gap:8, marginTop:10 }}>
+          <button onClick={onClose} style={{
+            flex:1, padding:'10px 0', background:'#374151', color:'#d1d5db',
+            border:'none', borderRadius:8, cursor:'pointer', fontSize:14
+          }}>キャンセル</button>
+          <button onClick={handleSend} disabled={!text.trim()} style={{
+            flex:1, padding:'10px 0', fontWeight:'bold', fontSize:14, border:'none',
+            borderRadius:8, cursor: text.trim() ? 'pointer' : 'not-allowed',
+            background: text.trim() ? '#2563eb' : '#374151',
+            color: text.trim() ? 'white' : '#6b7280'
+          }}>送信する</button>
+        </div>
+        <div style={{ fontSize:11, color:'#6b7280', marginTop:8, textAlign:'center' }}>
+          メールアプリが開きます
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===== ランキングボード =====
+function RankingBoard({ mode }) {
+  const rankings = getRankings(mode).slice(0, 3);
+  const medals = ['🥇', '🥈', '🥉'];
+  const label = mode === 'normal' ? '通常モード' : '清一色モード';
+  return (
+    <div style={{ background:'#1f2937', borderRadius:12, padding:14 }}>
+      <div style={{ fontSize:13, fontWeight:'bold', color:'#fbbf24', marginBottom:10 }}>
+        {label}
+      </div>
+      {rankings.length === 0 ? (
+        <div style={{ fontSize:12, color:'#4b5563', textAlign:'center', padding:'8px 0' }}>まだ記録なし</div>
+      ) : rankings.map((r, i) => (
+        <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:i < rankings.length-1 ? 8 : 0 }}>
+          <span style={{ fontSize:18, flexShrink:0 }}>{medals[i]}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:13, fontWeight:'bold', color:'white', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {r.name}
+            </div>
+            <div style={{ fontSize:11, color:'#9ca3af' }}>
+              {r.correct}/{MAX_Q[mode]}問正解　{formatTime(r.totalMs)}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ===== ホーム画面 =====
+function HomeScreen({ playerName, onNameChange, onStart, onFeedback }) {
+  return (
+    <div style={{ maxWidth:640, margin:'0 auto', padding:'12px 12px 40px', color:'white', minHeight:'100vh' }}>
+      {/* タイトル */}
+      <div style={{ textAlign:'center', padding:'32px 0 28px' }}>
+        <div style={{ fontSize:48 }}>🀄</div>
+        <div style={{ fontSize:26, fontWeight:'bold', marginTop:8 }}>一向聴クイズ</div>
+        <div style={{ fontSize:13, color:'#9ca3af', marginTop:4 }}>受け入れ牌をすべて当てよう</div>
+      </div>
+
+      {/* プレイヤー名 */}
+      <div style={{ background:'#1f2937', borderRadius:12, padding:16, marginBottom:16 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:6 }}>
+          <div style={{ fontSize:12, color:'#9ca3af' }}>プレイヤー名</div>
+          <div style={{ fontSize:12, color:'#9ca3af' }}>入力するとランキングに登録されます</div>
+        </div>
+        <input
+          value={playerName}
+          onChange={e => onNameChange(e.target.value)}
+          placeholder="名前を入力（任意）"
+          maxLength={20}
+          style={{ width:'100%', padding:'10px 12px', borderRadius:8, background:'#374151',
+                   color:'white', border:'1px solid #4b5563', fontSize:15, outline:'none',
+                   boxSizing:'border-box' }}
+        />
+      </div>
+
+      {/* モード選択・スタート */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:24 }}>
+        {[
+          ['normal',  '通常モード',  '萬子・筒子・索子・字牌'],
+          ['chiitsu', '清一色モード', '1種類の数牌のみ'],
+        ].map(([m, label, desc]) => (
+          <button key={m}
+            onClick={() => onStart(m)}
+            style={{ padding:'18px 8px', borderRadius:12, background:'#1d4ed8',
+                     color:'white', border:'2px solid #3b82f6', cursor:'pointer',
+                     textAlign:'center', transition:'background 0.15s' }}
+            onMouseOver={e => e.currentTarget.style.background = '#2563eb'}
+            onMouseOut={e => e.currentTarget.style.background = '#1d4ed8'}
+          >
+            <div style={{ fontSize:17, fontWeight:'bold', marginBottom:4 }}>{label}</div>
+            <div style={{ fontSize:11, color:'#bfdbfe', marginBottom:6 }}>{desc}</div>
+            <div style={{ fontSize:13, color:'#93c5fd', background:'rgba(0,0,0,0.2)',
+                          borderRadius:6, padding:'3px 0', display:'inline-block', width:'100%' }}>
+              全5問　スタート →
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* 今日のランキング */}
+      <div style={{ marginBottom:8 }}>
+        <div style={{ fontSize:14, fontWeight:'bold', color:'#e5e7eb', marginBottom:10 }}>
+          🏆 本日のランキング
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <RankingBoard mode="normal" />
+          <RankingBoard mode="chiitsu" />
+        </div>
+      </div>
+
+      {/* 不具合報告 */}
+      <div style={{ textAlign:'center', marginTop:24 }}>
+        <button onClick={onFeedback} style={{
+          background:'none', border:'none', color:'#6b7280', fontSize:12, cursor:'pointer',
+          textDecoration:'underline'
+        }}>不具合を報告する</button>
+      </div>
+    </div>
+  );
+}
+
+// ===== メインアプリ =====
+function App() {
+  const [screen, setScreen] = useState('home');
+  const [mode, setMode] = useState('normal');
+  const [playerName, setPlayerName] = useState(() => localStorage.getItem('mj_player') || '');
+  const [pool, setPool] = useState([]);
+  const [poolIdx, setPoolIdx] = useState(0);
+  const [score, setScore] = useState({ correct: 0, total: 0 });
+  const [qNum, setQNum] = useState(1);
+  const [selected, setSelected] = useState(new Set());
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [handFade, setHandFade] = useState(1);
+  const [handHistory, setHandHistory] = useState([]);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [quizKey, setQuizKey] = useState(0);
+  const startTimeRef = useRef(null);
+
+  // クイズ開始時に問題プールを生成
+  useEffect(() => {
+    if (screen !== 'quiz') return;
+    setLoading(true);
+    const id = setTimeout(() => {
+      setPool(generatePool(mode));
+      setPoolIdx(0);
+      setScore({ correct: 0, total: 0 });
+      setQNum(1);
+      setSelected(new Set());
+      setResult(null);
+      setHandHistory([]);
+      setLoading(false);
+    }, 30);
+    return () => clearTimeout(id);
+  }, [quizKey]);
+
+  // 問題切替時にタイマーリセット
+  useEffect(() => {
+    if (!loading && screen === 'quiz') {
+      startTimeRef.current = Date.now();
+      setElapsedMs(0);
+    }
+  }, [qNum, loading]);
+
+  // 解答中リアルタイムタイマー
+  useEffect(() => {
+    if (result || loading || screen !== 'quiz') return;
+    const id = setInterval(() => {
+      setElapsedMs(startTimeRef.current ? Date.now() - startTimeRef.current : 0);
+    }, 100);
+    return () => clearInterval(id);
+  }, [result, loading, screen]);
+
+  function handlePlayerName(name) {
+    setPlayerName(name);
+    localStorage.setItem('mj_player', name);
+  }
+
+  function startQuiz(selectedMode) {
+    setMode(selectedMode);
+    setScreen('quiz');
+    setQuizKey(k => k + 1);
+  }
+
+  function handleGoHome() {
+    setScreen('home');
+  }
+
+  function handleToggle(tile) {
+    if (result) return;
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(tile)) next.delete(tile); else next.add(tile);
+      return next;
+    });
+  }
+
+  function handleSubmit() {
+    if (selected.size === 0 || result) return;
+    const timeMs = startTimeRef.current ? Date.now() - startTimeRef.current : 0;
+    const accepts = calcAccepts(hand13, availTiles);
+    const correct = accepts.length === selected.size && accepts.every(t => selected.has(t));
+    setResult({ correct, accepts, timeMs });
+    setScore(s => ({ correct: s.correct + (correct ? 1 : 0), total: s.total + 1 }));
+    setHandHistory(prev => [...prev, { hand: [...hand13], accepts, correct, timeMs }]);
+  }
+
+  function handleNext() {
+    if (qNum >= MAX_Q[mode]) {
+      const totalMs = handHistory.reduce((s, e) => s + e.timeMs, 0);
+      if (playerName.trim()) saveRanking(mode, playerName, score.correct, totalMs);
+      setScreen('done');
+      return;
+    }
+    setHandFade(0);
+    setTimeout(() => {
+      setPoolIdx(i => (i + 1) % pool.length);
+      setSelected(new Set());
+      setResult(null);
+      setQNum(n => n + 1);
+      setHandFade(1);
+    }, 250);
+  }
+
+  const entry = pool[poolIdx] || null;
+  const hand13 = entry?.hand || [];
+  const availTiles = entry?.pool || ALL_TILES;
+  const containerStyle = { minHeight:'100vh', color:'white', padding:'12px', maxWidth:640, margin:'0 auto' };
+
+  // ホーム画面
+  if (screen === 'home') return (
+    <>
+      <HomeScreen
+        playerName={playerName}
+        onNameChange={handlePlayerName}
+        onStart={startQuiz}
+        onFeedback={() => setShowFeedback(true)}
+      />
+      {showFeedback && (
+        <FeedbackModal
+          onClose={() => setShowFeedback(false)}
+          mode={mode} score={{ correct:0, total:0 }} hand13={[]}
+        />
+      )}
+    </>
+  );
+
+  // 読み込み中
+  if (loading) return (
+    <div style={{ ...containerStyle, display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ fontSize:20 }}>問題を生成中…</div>
+    </div>
+  );
+
+  // クイズ終了画面
+  if (screen === 'done') {
+    const totalMs = handHistory.reduce((s, e) => s + e.timeMs, 0);
+    const avgMs   = totalMs / handHistory.length;
+    return (
+      <div style={containerStyle}>
+        <div style={{ fontSize:24, fontWeight:'bold', textAlign:'center', marginBottom:4 }}>クイズ終了！</div>
+        <div style={{ fontSize:13, color:'#9ca3af', textAlign:'center', marginBottom:4 }}>
+          {mode === 'chiitsu' ? '清一色' : '通常'}モード　/ {playerName}
+        </div>
+        <div style={{ fontSize:15, color:'#d1d5db', textAlign:'center', marginBottom:6 }}>
+          {MAX_Q[mode]}問中&nbsp;
+          <span style={{ color:'#fbbf24', fontSize:24, fontWeight:'bold' }}>{score.correct}</span>
+          &nbsp;問正解（正解率 {Math.round(score.correct / MAX_Q[mode] * 100)}%）
+        </div>
+        <div style={{ fontSize:13, color:'#9ca3af', textAlign:'center', marginBottom:20,
+                      display:'flex', justifyContent:'center', gap:20 }}>
+          <span>⏱ 平均：{formatTime(avgMs)}</span>
+          <span>🕐 合計：{formatTime(totalMs)}</span>
+        </div>
+
+        {/* 手牌一覧 */}
+        <div style={{ display:'flex', flexDirection:'column', gap:12, marginBottom:20 }}>
+          {handHistory.map((entry, idx) => (
+            <div key={idx} style={{ background:'#1f2937', borderRadius:12, padding:12,
+                                    border:`2px solid ${entry.correct ? '#22c55e' : '#ef4444'}` }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                <span style={{ fontSize:13, fontWeight:'bold' }}>{entry.correct ? '✅' : '❌'} 第{idx+1}問</span>
+                <span style={{ fontSize:11, color:'#9ca3af' }}>⏱ {formatTime(entry.timeMs)}</span>
+              </div>
+              <div style={{ display:'flex', flexWrap:'nowrap', gap:2, overflowX:'auto', marginBottom:8 }}>
+                {[...entry.hand].sort((a,b) => tileIdx(a)-tileIdx(b)).map((t,i) => (
+                  <TileImg key={i} tile={t} size={34}/>
+                ))}
+              </div>
+              <div style={{ fontSize:11, color:'#9ca3af', marginBottom:4 }}>受け入れ牌：</div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:3 }}>
+                {entry.accepts.map(t => (
+                  <div key={t} style={{ display:'flex', flexDirection:'column', alignItems:'center' }}>
+                    <TileImg tile={t} size={30}/>
+                    <span style={{ fontSize:9, color:'#9ca3af', marginTop:1 }}>{TILE_NAMES[t]}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* ボタン */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:16 }}>
+          <button onClick={handleGoHome} style={{
+            padding:'12px 0', background:'#374151', color:'white', fontWeight:'bold',
+            fontSize:15, borderRadius:10, border:'none', cursor:'pointer'
+          }}>ホームへ戻る</button>
+          <button onClick={() => startQuiz(mode)} style={{
+            padding:'12px 0', background:'#2563eb', color:'white', fontWeight:'bold',
+            fontSize:15, borderRadius:10, border:'none', cursor:'pointer'
+          }}>もう一度プレイ</button>
+        </div>
+
+        <div style={{ textAlign:'center' }}>
+          <button onClick={() => setShowFeedback(true)} style={{
+            background:'none', border:'none', color:'#6b7280', fontSize:12, cursor:'pointer',
+            textDecoration:'underline'
+          }}>不具合を報告する</button>
+        </div>
+
+        {showFeedback && (
+          <FeedbackModal
+            onClose={() => setShowFeedback(false)}
+            mode={mode} score={score} hand13={[]}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // クイズ画面
+  return (
+    <div style={containerStyle}>
+      {/* ヘッダー */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                    marginBottom:14, background:'#1f2937', borderRadius:12, padding:'10px 14px' }}>
+        <div>
+          <button onClick={() => {
+            if (score.total > 0 && !window.confirm('クイズを中断してホームに戻りますか？')) return;
+            handleGoHome();
+          }} style={{
+            background:'#374151', border:'1px solid #4b5563', color:'#e5e7eb',
+            fontSize:14, fontWeight:'bold', cursor:'pointer',
+            padding:'6px 12px', borderRadius:8, display:'flex', alignItems:'center', gap:4
+          }}>
+            ← ホーム
+          </button>
+          <div style={{ fontSize:11, color:'#6b7280', marginTop:4 }}>
+            {mode === 'chiitsu' ? '清一色' : '通常'}　/ {playerName}
+          </div>
+        </div>
+        <div style={{ textAlign:'center' }}>
+          <div style={{ fontSize:13, color:'#9ca3af' }}>第 {qNum} 問 / {MAX_Q[mode]} 問</div>
+          <div style={{ fontSize:22, fontWeight:'bold', color:'#fbbf24' }}>{score.correct}</div>
+          <div style={{ fontSize:11, color:'#9ca3af' }}>{score.total} 問中正解</div>
+        </div>
+        <div style={{ width:70 }} />
+      </div>
+
+      {/* 手牌 */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+          <div style={{ fontSize:12, color:'#9ca3af' }}>手牌（13枚・一向聴）</div>
+          {!result && (
+            <div style={{ fontSize:13, fontWeight:'bold', fontVariantNumeric:'tabular-nums',
+                          color: elapsedMs > 30000 ? '#f87171' : elapsedMs > 15000 ? '#fbbf24' : '#9ca3af' }}>
+              ⏱ {formatTime(elapsedMs)}
+            </div>
+          )}
+        </div>
+        <div style={{ opacity: handFade, transition:'opacity 0.25s ease', transform: handFade===1 ? 'none' : 'translateY(6px)' }}>
+          <HandArea hand={hand13} />
+        </div>
+      </div>
+
+      {/* 選択エリア */}
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:12, color:'#9ca3af', marginBottom:6 }}>
+          受け入れ牌をすべて選んで送信
+          {selected.size > 0 && !result && (
+            <span style={{ color:'#fbbf24', marginLeft:8 }}>（{selected.size}枚選択中）</span>
+          )}
+        </div>
+        <div style={{ background:'#1f2937', borderRadius:12, padding:12 }}>
+          <SelectArea
+            availableTiles={availTiles}
+            selected={selected}
+            onToggle={handleToggle}
+            result={result}
+          />
+        </div>
+      </div>
+
+      {/* 結果 */}
+      {result && (
+        <div style={{ marginBottom:14 }}>
+          <ResultPanel result={result} hand13={hand13} onNext={handleNext} isLast={qNum >= MAX_Q[mode]} />
+        </div>
+      )}
+
+      {/* 送信ボタン */}
+      {!result && (
+        <button onClick={handleSubmit} disabled={selected.size === 0} style={{
+          width:'100%', padding:'12px 0', borderRadius:12, fontWeight:'bold', fontSize:16,
+          border:'none', cursor: selected.size > 0 ? 'pointer' : 'not-allowed',
+          background: selected.size > 0 ? '#ea580c' : '#374151',
+          color: selected.size > 0 ? 'white' : '#6b7280',
+          transition:'background 0.15s'
+        }}>
+          {selected.size > 0 ? `${selected.size}枚選択して送信` : '受け入れ牌を選択してください'}
+        </button>
+      )}
+
+      {/* 不具合報告 */}
+      <div style={{ textAlign:'center', marginTop:16 }}>
+        <button onClick={() => setShowFeedback(true)} style={{
+          background:'none', border:'none', color:'#6b7280', fontSize:12, cursor:'pointer',
+          textDecoration:'underline'
+        }}>不具合を報告する</button>
+      </div>
+
+      {showFeedback && (
+        <FeedbackModal
+          onClose={() => setShowFeedback(false)}
+          mode={mode} score={score} hand13={hand13}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
