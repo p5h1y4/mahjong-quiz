@@ -331,10 +331,12 @@ function TileImg({ tile, size = 52, onClick, style }) {
 
 function HandArea({ hand }) {
   const sorted = [...hand].sort((a,b) => tileIdx(a) - tileIdx(b));
+  // 画面幅から外側のpadding(24px)・内側のpadding(12px)・gap(24px)を引いて13枚で割る
+  const tileSize = 'min(42px, calc((100vw - 60px) / 13))';
   return (
     <div style={{ display:'flex', flexWrap:'nowrap', justifyContent:'center', gap:2,
                   padding:'8px 6px', background:'#14532d', borderRadius:12, border:'2px solid #166534' }}>
-      {sorted.map((t,i) => <TileImg key={i} tile={t} size={42}/>)}
+      {sorted.map((t,i) => <TileImg key={i} tile={t} size={42} style={{ width:tileSize, height:tileSize }}/>)}
     </div>
   );
 }
