@@ -8,12 +8,28 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <style>
   body { background: #1a1a2e; font-family: 'Hiragino Sans', 'Noto Sans JP', sans-serif; }
 </style>
 </head>
 <body>
 <div id="root"></div>
+<script>
+// ===== Firebase設定（ここにあなたの設定を入力）=====
+const firebaseConfig = {
+  apiKey:            "AIzaSyBWh_BZONH61snTEjF9kZhCSDvQ2Vu1X9c",
+  authDomain:        "mahjong-quiz-1f006.firebaseapp.com",
+  projectId:         "mahjong-quiz-1f006",
+  storageBucket:     "mahjong-quiz-1f006.firebasestorage.app",
+  messagingSenderId: "191079692467",
+  appId:             "1:191079692467:web:44457821fbfb2d91db98c6"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+</script>
+
 <script type="text/babel">
 const { useState, useEffect, useRef } = React;
 
@@ -292,18 +308,33 @@ function generatePool(mode, size = 80) {
   return shuffle(results);
 }
 
-// ===== ランキング =====
+// ===== ランキング（Firestore）=====
 function todayStr() { return new Date().toISOString().slice(0,10).replace(/-/g,''); }
-function getRankings(mode) {
-  try { return JSON.parse(localStorage.getItem(`mj_rank_${mode}_${todayStr()}`) || '[]'); }
-  catch { return []; }
+
+async function getRankingsFromDB(mode) {
+  try {
+    const snapshot = await db.collection('rankings')
+      .where('mode', '==', mode)
+      .where('date', '==', todayStr())
+      .get();
+    const list = snapshot.docs.map(d => d.data());
+    list.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
+    return list.slice(0, 10);
+  } catch(e) {
+    console.error('ランキング取得エラー:', e);
+    return [];
+  }
 }
-function saveRanking(mode, name, correct, totalMs) {
-  const key = `mj_rank_${mode}_${todayStr()}`;
-  const list = getRankings(mode);
-  list.push({ name: name || 'プレイヤー', correct, totalMs });
-  list.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
-  localStorage.setItem(key, JSON.stringify(list.slice(0, 10)));
+
+async function saveRankingToDb(mode, name, correct, totalMs) {
+  try {
+    await db.collection('rankings').add({
+      mode, date: todayStr(), name, correct, totalMs,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch(e) {
+    console.error('ランキング保存エラー:', e);
+  }
 }
 
 // ===== コンポーネント =====
@@ -475,16 +506,28 @@ function FeedbackModal({ onClose, mode, score, hand13 }) {
 }
 
 // ===== ランキングボード =====
-function RankingBoard({ mode }) {
-  const rankings = getRankings(mode).slice(0, 3);
+function RankingBoard({ mode, refreshKey }) {
+  const [rankings, setRankings] = useState([]);
+  const [loading, setLoading] = useState(true);
   const medals = ['🥇', '🥈', '🥉'];
   const label = mode === 'normal' ? '通常モード' : '清一色モード';
+
+  useEffect(() => {
+    setLoading(true);
+    getRankingsFromDB(mode).then(list => {
+      setRankings(list.slice(0, 3));
+      setLoading(false);
+    });
+  }, [mode, refreshKey]);
+
   return (
     <div style={{ background:'#1f2937', borderRadius:12, padding:14 }}>
       <div style={{ fontSize:13, fontWeight:'bold', color:'#fbbf24', marginBottom:10 }}>
         {label}
       </div>
-      {rankings.length === 0 ? (
+      {loading ? (
+        <div style={{ fontSize:12, color:'#4b5563', textAlign:'center', padding:'8px 0' }}>読込中…</div>
+      ) : rankings.length === 0 ? (
         <div style={{ fontSize:12, color:'#4b5563', textAlign:'center', padding:'8px 0' }}>まだ記録なし</div>
       ) : rankings.map((r, i) => (
         <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:i < rankings.length-1 ? 8 : 0 }}>
@@ -504,7 +547,7 @@ function RankingBoard({ mode }) {
 }
 
 // ===== ホーム画面 =====
-function HomeScreen({ playerName, onNameChange, onStart, onFeedback }) {
+function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey }) {
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'12px 12px 40px', color:'white', minHeight:'100vh' }}>
       {/* タイトル */}
@@ -561,8 +604,8 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback }) {
           🏆 本日のランキング
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-          <RankingBoard mode="normal" />
-          <RankingBoard mode="chiitsu" />
+          <RankingBoard mode="normal" refreshKey={refreshKey} />
+          <RankingBoard mode="chiitsu" refreshKey={refreshKey} />
         </div>
       </div>
 
@@ -597,6 +640,7 @@ function App() {
   const [showFeedback, setShowFeedback] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [quizKey, setQuizKey] = useState(0);
+  const [rankingKey, setRankingKey] = useState(0);
   const startTimeRef = useRef(null);
 
   // クイズ開始時に問題プールを生成
@@ -645,6 +689,7 @@ function App() {
   }
 
   function handleGoHome() {
+    setRankingKey(k => k + 1);
     setScreen('home');
   }
 
@@ -670,7 +715,7 @@ function App() {
   function handleNext() {
     if (qNum >= MAX_Q[mode]) {
       const totalMs = handHistory.reduce((s, e) => s + e.timeMs, 0);
-      if (playerName.trim()) saveRanking(mode, playerName, score.correct, totalMs);
+      if (playerName.trim()) saveRankingToDb(mode, playerName, score.correct, totalMs);
       setScreen('done');
       return;
     }
@@ -697,6 +742,7 @@ function App() {
         onNameChange={handlePlayerName}
         onStart={startQuiz}
         onFeedback={() => setShowFeedback(true)}
+        refreshKey={rankingKey}
       />
       {showFeedback && (
         <FeedbackModal
