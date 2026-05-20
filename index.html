@@ -337,6 +337,18 @@ async function saveRankingToDb(mode, name, correct, totalMs) {
   }
 }
 
+async function cleanupOldRankings() {
+  try {
+    const snapshot = await db.collection('rankings')
+      .where('date', '<', todayStr())
+      .get();
+    if (snapshot.empty) return;
+    const batch = db.batch();
+    snapshot.docs.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+  } catch(e) {}
+}
+
 // ===== コンポーネント =====
 function TileImg({ tile, size = 52, onClick, style }) {
   return (
@@ -642,6 +654,8 @@ function App() {
   const [quizKey, setQuizKey] = useState(0);
   const [rankingKey, setRankingKey] = useState(0);
   const startTimeRef = useRef(null);
+
+  useEffect(() => { cleanupOldRankings(); }, []);
 
   // クイズ開始時に問題プールを生成
   useEffect(() => {
