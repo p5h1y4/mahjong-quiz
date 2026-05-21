@@ -43,6 +43,18 @@ const HONOR = ['ton','nan','sha','pei','haku','hatsu','chun'];
 const ALL_TILES = [...MAN, ...PIN, ...SOU, ...HONOR];
 const MAX_Q = { normal: 5, chiitsu: 5 };
 const KOKUSHI_TILES = ['1m','9m','1p','9p','1s','9s','ton','nan','sha','pei','haku','hatsu','chun'];
+
+// ===== NGワード =====
+const NG_WORDS = [
+  '死ね','ころす','殺す','死んで','しね','氏ね',
+  'バカ','ばか','アホ','あほ','クソ','くそ','うんこ','ウンコ',
+  'チンコ','ちんこ','マンコ','まんこ','セックス','えろ','エロ',
+  'fuck','shit','dick','ass','bitch','nigger','nigga',
+];
+function containsNgWord(text) {
+  const t = text.toLowerCase();
+  return NG_WORDS.some(w => t.includes(w.toLowerCase()));
+}
 const TILE_NAMES = {
   '1m':'一萬','2m':'二萬','3m':'三萬','4m':'四萬','5m':'五萬','6m':'六萬','7m':'七萬','8m':'八萬','9m':'九萬',
   '1p':'一筒','2p':'二筒','3p':'三筒','4p':'四筒','5p':'五筒','6p':'六筒','7p':'七筒','8p':'八筒','9p':'九筒',
@@ -331,6 +343,20 @@ async function getRankingsFromDB(mode) {
 
 async function saveRankingToDb(mode, name, correct, totalMs) {
   try {
+    const snap = await db.collection('rankings')
+      .where('mode', '==', mode)
+      .where('date', '==', todayStr())
+      .where('name', '==', name)
+      .get();
+    if (!snap.empty) {
+      const existing = snap.docs[0].data();
+      const newIsBetter = correct > existing.correct ||
+        (correct === existing.correct && totalMs < existing.totalMs);
+      if (!newIsBetter) return;
+      const batch = db.batch();
+      snap.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+    }
     await db.collection('rankings').add({
       mode, date: todayStr(), name, correct, totalMs,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -382,7 +408,12 @@ async function seedHallOfFameIfEmpty() {
       const all = rankSnap.docs.map(d => d.data());
       all.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
 
-      for (const r of all.filter(r => hofQualifies(r, all))) {
+      // 同名は最良スコアのみ残す
+      const bestByName = {};
+      for (const r of all) { if (!bestByName[r.name]) bestByName[r.name] = r; }
+      const deduped = Object.values(bestByName).sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
+
+      for (const r of deduped.filter(r => hofQualifies(r, deduped))) {
         await db.collection('hallOfFame').add({
           mode: r.mode, date: r.date, name: r.name,
           correct: r.correct, totalMs: r.totalMs,
@@ -396,7 +427,18 @@ async function seedHallOfFameIfEmpty() {
 async function updateHallOfFame(mode, name, correct, totalMs) {
   try {
     const existing = await getHallOfFameFromDB(mode);
-    const allSorted = [...existing, { correct, totalMs }];
+
+    // 同名レコードがあれば比較して劣る方は除外
+    const sameNameEntry = existing.find(e => e.name === name);
+    if (sameNameEntry) {
+      const newIsBetter = correct > sameNameEntry.correct ||
+        (correct === sameNameEntry.correct && totalMs < sameNameEntry.totalMs);
+      if (!newIsBetter) return;
+      await sameNameEntry.ref.delete();
+    }
+
+    const baseList = existing.filter(e => e.name !== name);
+    const allSorted = [...baseList, { correct, totalMs }];
     allSorted.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
 
     if (!hofQualifies({ correct, totalMs }, allSorted)) return;
@@ -407,7 +449,7 @@ async function updateHallOfFame(mode, name, correct, totalMs) {
     });
 
     const today = todayStr();
-    for (const entry of existing) {
+    for (const entry of baseList) {
       if (!hofQualifies(entry, allSorted) && entry.date !== today) {
         await entry.ref.delete();
       }
@@ -699,9 +741,14 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
           placeholder="名前を入力（任意）"
           maxLength={20}
           style={{ width:'100%', padding:'10px 12px', borderRadius:8, background:'#374151',
-                   color:'white', border:'1px solid #4b5563', fontSize:15, outline:'none',
-                   boxSizing:'border-box' }}
+                   color:'white', border: containsNgWord(playerName) ? '1px solid #ef4444' : '1px solid #4b5563',
+                   fontSize:15, outline:'none', boxSizing:'border-box' }}
         />
+        {containsNgWord(playerName) && (
+          <div style={{ fontSize:11, color:'#ef4444', marginTop:4 }}>
+            使用できない名前です
+          </div>
+        )}
       </div>
 
       {/* モード選択・スタート */}
@@ -709,14 +756,19 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
         {[
           ['normal',  '通常モード',  '萬子・筒子・索子・字牌'],
           ['chiitsu', '清一色モード', '1種類の数牌のみ'],
-        ].map(([m, label, desc]) => (
+        ].map(([m, label, desc]) => {
+          const blocked = containsNgWord(playerName);
+          return (
           <button key={m}
-            onClick={() => onStart(m)}
-            style={{ padding:'18px 8px', borderRadius:12, background:'#1d4ed8',
-                     color:'white', border:'2px solid #3b82f6', cursor:'pointer',
+            onClick={() => !blocked && onStart(m)}
+            style={{ padding:'18px 8px', borderRadius:12,
+                     background: blocked ? '#374151' : '#1d4ed8',
+                     color: blocked ? '#6b7280' : 'white',
+                     border: blocked ? '2px solid #4b5563' : '2px solid #3b82f6',
+                     cursor: blocked ? 'not-allowed' : 'pointer',
                      textAlign:'center', transition:'background 0.15s' }}
-            onMouseOver={e => e.currentTarget.style.background = '#2563eb'}
-            onMouseOut={e => e.currentTarget.style.background = '#1d4ed8'}
+            onMouseOver={e => { if (!blocked) e.currentTarget.style.background = '#2563eb'; }}
+            onMouseOut={e => { if (!blocked) e.currentTarget.style.background = '#1d4ed8'; }}
           >
             <div style={{ fontSize:17, fontWeight:'bold', marginBottom:4 }}>{label}</div>
             <div style={{ fontSize:11, color:'#bfdbfe', marginBottom:6 }}>{desc}</div>
@@ -725,7 +777,8 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
               全5問　スタート →
             </div>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {/* 今日のランキング */}
