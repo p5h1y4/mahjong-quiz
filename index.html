@@ -370,6 +370,29 @@ function hofQualifies(score, sortedAll) {
     (score.correct === third.correct && score.totalMs <= third.totalMs);
 }
 
+async function seedHallOfFameIfEmpty() {
+  try {
+    for (const mode of ['normal', 'chiitsu']) {
+      const hofSnap = await db.collection('hallOfFame').where('mode', '==', mode).limit(1).get();
+      if (!hofSnap.empty) continue;
+
+      const rankSnap = await db.collection('rankings').where('mode', '==', mode).get();
+      if (rankSnap.empty) continue;
+
+      const all = rankSnap.docs.map(d => d.data());
+      all.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
+
+      for (const r of all.filter(r => hofQualifies(r, all))) {
+        await db.collection('hallOfFame').add({
+          mode: r.mode, date: r.date, name: r.name,
+          correct: r.correct, totalMs: r.totalMs,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      }
+    }
+  } catch(e) {}
+}
+
 async function updateHallOfFame(mode, name, correct, totalMs) {
   try {
     const existing = await getHallOfFameFromDB(mode);
@@ -762,7 +785,7 @@ function App() {
   const [hofKey, setHofKey] = useState(0);
   const startTimeRef = useRef(null);
 
-  useEffect(() => { cleanupOldRankings(); }, []);
+  useEffect(() => { seedHallOfFameIfEmpty().then(() => cleanupOldRankings()); }, []);
 
   // クイズ開始時に問題プールを生成
   useEffect(() => {
