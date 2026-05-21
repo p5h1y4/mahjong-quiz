@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://mahjong-quiz.netlify.app/sitemap.xml
