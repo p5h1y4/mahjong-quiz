@@ -352,6 +352,48 @@ async function cleanupOldRankings() {
   } catch(e) {}
 }
 
+async function getHallOfFameFromDB(mode) {
+  try {
+    const snapshot = await db.collection('hallOfFame')
+      .where('mode', '==', mode)
+      .get();
+    const list = snapshot.docs.map(d => ({ id: d.id, ref: d.ref, ...d.data() }));
+    list.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
+    return list;
+  } catch(e) { return []; }
+}
+
+function hofQualifies(score, sortedAll) {
+  if (sortedAll.length <= 3) return true;
+  const third = sortedAll[2];
+  return score.correct > third.correct ||
+    (score.correct === third.correct && score.totalMs <= third.totalMs);
+}
+
+async function updateHallOfFame(mode, name, correct, totalMs) {
+  try {
+    const existing = await getHallOfFameFromDB(mode);
+    const allSorted = [...existing, { correct, totalMs }];
+    allSorted.sort((a, b) => b.correct - a.correct || a.totalMs - b.totalMs);
+
+    if (!hofQualifies({ correct, totalMs }, allSorted)) return;
+
+    await db.collection('hallOfFame').add({
+      mode, date: todayStr(), name, correct, totalMs,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    const today = todayStr();
+    for (const entry of existing) {
+      if (!hofQualifies(entry, allSorted) && entry.date !== today) {
+        await entry.ref.delete();
+      }
+    }
+  } catch(e) {
+    console.error('殿堂入り更新エラー:', e);
+  }
+}
+
 // ===== コンポーネント =====
 function TileImg({ tile, size = 52, onClick, style }) {
   return (
@@ -561,8 +603,58 @@ function RankingBoard({ mode, refreshKey }) {
   );
 }
 
+// ===== 殿堂入りボード =====
+function HallOfFameBoard({ mode, refreshKey }) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const medals = ['🥇', '🥈', '🥉'];
+  const label = mode === 'normal' ? '通常モード' : '清一色モード';
+
+  useEffect(() => {
+    setLoading(true);
+    getHallOfFameFromDB(mode).then(list => {
+      setRecords(list);
+      setLoading(false);
+    });
+  }, [mode, refreshKey]);
+
+  return (
+    <div style={{ background:'#1f2937', borderRadius:12, padding:14 }}>
+      <div style={{ fontSize:13, fontWeight:'bold', color:'#fbbf24', marginBottom:10 }}>
+        {label}
+      </div>
+      {loading ? (
+        <div style={{ fontSize:12, color:'#4b5563', textAlign:'center', padding:'8px 0' }}>読込中…</div>
+      ) : records.length === 0 ? (
+        <div style={{ fontSize:12, color:'#4b5563', textAlign:'center', padding:'8px 0' }}>まだ記録なし</div>
+      ) : records.map((r, i) => {
+        const betterCount = records.filter(e =>
+          e.correct > r.correct || (e.correct === r.correct && e.totalMs < r.totalMs)
+        ).length;
+        const rank = betterCount + 1;
+        const d = r.date;
+        const dateStr = d ? `${d.slice(0,4)}/${d.slice(4,6)}/${d.slice(6,8)}` : '';
+        return (
+          <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom: i < records.length-1 ? 8 : 0 }}>
+            <span style={{ fontSize:18, flexShrink:0 }}>{medals[rank-1] || '　'}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:13, fontWeight:'bold', color:'white', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {r.name}
+              </div>
+              <div style={{ fontSize:11, color:'#9ca3af' }}>
+                {r.correct}/{MAX_Q[mode]}問正解　{formatTime(r.totalMs)}
+              </div>
+              <div style={{ fontSize:10, color:'#6b7280' }}>{dateStr}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ===== ホーム画面 =====
-function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey }) {
+function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey, hofRefreshKey }) {
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'12px 12px 40px', color:'white', minHeight:'100vh' }}>
       {/* タイトル */}
@@ -624,6 +716,17 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey 
         </div>
       </div>
 
+      {/* 殿堂入りランキング */}
+      <div style={{ marginTop:24, marginBottom:8 }}>
+        <div style={{ fontSize:14, fontWeight:'bold', color:'#e5e7eb', marginBottom:10 }}>
+          👑 殿堂入りランキング
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <HallOfFameBoard mode="normal" refreshKey={hofRefreshKey} />
+          <HallOfFameBoard mode="chiitsu" refreshKey={hofRefreshKey} />
+        </div>
+      </div>
+
       {/* 不具合報告 */}
       <div style={{ textAlign:'center', marginTop:24, display:'flex', justifyContent:'center', gap:16 }}>
         <button onClick={onFeedback} style={{
@@ -656,6 +759,7 @@ function App() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [quizKey, setQuizKey] = useState(0);
   const [rankingKey, setRankingKey] = useState(0);
+  const [hofKey, setHofKey] = useState(0);
   const startTimeRef = useRef(null);
 
   useEffect(() => { cleanupOldRankings(); }, []);
@@ -707,6 +811,7 @@ function App() {
 
   function handleGoHome() {
     setRankingKey(k => k + 1);
+    setHofKey(k => k + 1);
     setScreen('home');
   }
 
@@ -732,7 +837,10 @@ function App() {
   function handleNext() {
     if (qNum >= MAX_Q[mode]) {
       const totalMs = handHistory.reduce((s, e) => s + e.timeMs, 0);
-      if (playerName.trim()) saveRankingToDb(mode, playerName, score.correct, totalMs);
+      if (playerName.trim()) {
+        saveRankingToDb(mode, playerName, score.correct, totalMs);
+        updateHallOfFame(mode, playerName, score.correct, totalMs);
+      }
       setScreen('done');
       return;
     }
@@ -760,6 +868,7 @@ function App() {
         onStart={startQuiz}
         onFeedback={() => setShowFeedback(true)}
         refreshKey={rankingKey}
+        hofRefreshKey={hofKey}
       />
       {showFeedback && (
         <FeedbackModal
