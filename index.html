@@ -157,9 +157,15 @@ function normalShanten(hand) {
 function chiitoiShanten(hand) {
   const seen = {};
   for (const t of hand) seen[t] = (seen[t] || 0) + 1;
-  let pairs = 0;
-  for (const cnt of Object.values(seen)) if (cnt >= 2) pairs++;
-  return 6 - pairs;
+  let pairs = 0, singles = 0;
+  for (const cnt of Object.values(seen)) {
+    if (cnt >= 2) pairs++;
+    else singles++; // 孤立牌（1枚）：対子候補になれる
+  }
+  pairs = Math.min(pairs, 7);
+  // 有効な牌種数（孤立+対子）が7未満なら、不足分だけシャンテンが遠い
+  const uniqueUseful = Math.min(pairs + singles, 7);
+  return 6 - pairs + Math.max(0, 7 - uniqueUseful);
 }
 
 function kokushiShanten(hand) {
@@ -300,14 +306,19 @@ function generateChiitoiHand(pool) {
   for (let attempt = 0; attempt < 100; attempt++) {
     const shuffled = shuffle([...pool]);
     const pairs = [], used = {};
+    // 5対子（10枚）を作る
     for (const t of shuffled) {
-      if (!used[t] && pairs.length < 12) { pairs.push(t, t); used[t] = true; }
+      if (!used[t] && pairs.length < 10) { pairs.push(t, t); used[t] = true; }
     }
-    if (pairs.length < 12) continue;
-    const lone = shuffled.find(t => !used[t]);
-    if (!lone) continue;
-    const hand = [...pairs, lone];
-    if (hand.length === 13 && chiitoiShanten(hand) === 1) return hand;
+    if (pairs.length < 10) continue;
+    // 異なる種類の孤立牌を3枚追加 → 七対子の一向聴（5対子+3孤立）
+    const singles = [];
+    for (const t of shuffled) {
+      if (!used[t] && singles.length < 3) { singles.push(t); used[t] = true; }
+    }
+    if (singles.length < 3) continue;
+    const hand = [...pairs, ...singles];
+    if (hand.length === 13 && isIishanten(hand)) return hand;
   }
   return null;
 }
