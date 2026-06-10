@@ -390,6 +390,42 @@ function generateDailyPool() {
   return results;
 }
 
+// ===== チャレンジリンク（友達対戦）=====
+// シードを指定して問題プールを生成（同じシード＋モードなら誰でも同じ問題になる）
+function seededPool(mode, seed) {
+  randomSource = mulberry32(seed);
+  const p = generatePool(mode);
+  randomSource = Math.random;
+  return p;
+}
+
+// URLの ?c=シード&m=モード&s=正解数&t=時間&n=名前 を読み取る
+function parseChallengeFromURL() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    if (!p.has('c')) return null;
+    const seed = parseInt(p.get('c'), 10);
+    const mode = p.get('m');
+    const correct = parseInt(p.get('s'), 10);
+    const totalMs = parseInt(p.get('t'), 10);
+    const name = (p.get('n') || '名無し').slice(0, 20);
+    if (!Number.isFinite(seed) || !MAX_Q[mode] || mode === 'daily' ||
+        !Number.isFinite(correct) || !Number.isFinite(totalMs)) return null;
+    if (containsNgWord(name)) return null;
+    return {
+      seed,
+      mode,
+      correct: Math.min(Math.max(correct, 0), MAX_Q[mode]),
+      totalMs: Math.max(totalMs, 0),
+      name,
+    };
+  } catch(e) { return null; }
+}
+
+function buildChallengeURL(seed, mode, correct, totalMs, name) {
+  return `${SITE_URL}/?c=${seed}&m=${mode}&s=${correct}&t=${totalMs}&n=${encodeURIComponent(name || '名無し')}`;
+}
+
 // ===== デイリー結果・連続記録（localStorage）=====
 function getDailyResult() {
   try { return JSON.parse(localStorage.getItem('mj_daily_' + todayStr())); }
@@ -837,7 +873,7 @@ function HallOfFameBoard({ mode, refreshKey }) {
 }
 
 // ===== ホーム画面 =====
-function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey, hofRefreshKey }) {
+function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey, hofRefreshKey, challenge }) {
   const dailyResult = getDailyResult();
   const streak = getStreak();
   const blocked = containsNgWord(playerName);
@@ -871,6 +907,28 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
           </div>
         )}
       </div>
+
+      {/* 挑戦状バナー（チャレンジリンクから来た場合） */}
+      {challenge && (
+        <div style={{ marginBottom:16, padding:16, borderRadius:12, textAlign:'center',
+                      background:'#2e1065', border:'2px solid #a78bfa' }}>
+          <div style={{ fontSize:16, fontWeight:'bold', color:'#c4b5fd', marginBottom:4 }}>
+            ⚔️ {challenge.name}さんからの挑戦状！
+          </div>
+          <div style={{ fontSize:13, color:'#ddd6fe', marginBottom:10 }}>
+            {MODE_LABELS[challenge.mode]}モード　{challenge.correct}/{MAX_Q[challenge.mode]}問正解・{formatTime(challenge.totalMs)}
+            <br/>同じ問題であなたの実力を見せつけよう！
+          </div>
+          <button
+            onClick={() => !blocked && onStart(challenge.mode, challenge.seed)}
+            style={{ padding:'10px 28px', borderRadius:10, border:'none', fontWeight:'bold', fontSize:15,
+                     background: blocked ? '#374151' : '#7c3aed',
+                     color: blocked ? '#6b7280' : 'white',
+                     cursor: blocked ? 'not-allowed' : 'pointer' }}>
+            挑戦を受ける →
+          </button>
+        </div>
+      )}
 
       {/* デイリーチャレンジ */}
       <div style={{ marginBottom:16 }}>
@@ -1033,6 +1091,10 @@ function App() {
   const [quizKey, setQuizKey] = useState(0);
   const [rankingKey, setRankingKey] = useState(0);
   const [hofKey, setHofKey] = useState(0);
+  const [seed, setSeed] = useState(null);
+  const [challengeInfo] = useState(parseChallengeFromURL); // URLからの挑戦状
+  const [isChallengeRun, setIsChallengeRun] = useState(false);
+  const [copied, setCopied] = useState(false);
   const startTimeRef = useRef(null);
 
   useEffect(() => { seedHallOfFameIfEmpty().then(() => cleanupOldRankings()); }, []);
@@ -1042,7 +1104,7 @@ function App() {
     if (screen !== 'quiz') return;
     setLoading(true);
     const id = setTimeout(() => {
-      setPool(mode === 'daily' ? generateDailyPool() : generatePool(mode));
+      setPool(mode === 'daily' ? generateDailyPool() : seededPool(mode, seed));
       setPoolIdx(0);
       setScore({ correct: 0, total: 0 });
       setQNum(1);
@@ -1090,9 +1152,12 @@ function App() {
     localStorage.setItem('mj_player', name);
   }
 
-  function startQuiz(selectedMode) {
+  function startQuiz(selectedMode, challengeSeed = null) {
     if (selectedMode === 'daily' && getDailyResult()) return; // デイリーは1日1回まで
     setMode(selectedMode);
+    setIsChallengeRun(challengeSeed != null);
+    // 挑戦を受けた場合は相手と同じシード、通常は毎回ランダムなシード
+    setSeed(challengeSeed != null ? challengeSeed : Math.floor(Math.random() * 2147483647));
     setScreen('quiz');
     setQuizKey(k => k + 1);
   }
@@ -1100,7 +1165,21 @@ function App() {
   function handleGoHome() {
     setRankingKey(k => k + 1);
     setHofKey(k => k + 1);
+    setCopied(false);
     setScreen('home');
+  }
+
+  function handleSendChallenge(totalMs) {
+    const msg = `【挑戦状】麻雀一向聴クイズ ${MODE_LABELS[mode]}モードで` +
+      `${score.correct}/${MAX_Q[mode]}問正解（${formatTime(totalMs)}）！同じ問題で勝負！\n` +
+      buildChallengeURL(seed, mode, score.correct, totalMs, playerName.trim() || '名無し');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(msg)
+        .then(() => setCopied(true))
+        .catch(() => window.prompt('以下をコピーして友達に送ってください', msg));
+    } else {
+      window.prompt('以下をコピーして友達に送ってください', msg);
+    }
   }
 
   function handleToggle(tile) {
@@ -1130,7 +1209,8 @@ function App() {
         saveDailyResult(score.correct, totalMs, marks);
         updateStreak();
       }
-      if (playerName.trim()) {
+      // 挑戦対戦は同じ問題を知っている前提のためランキング対象外
+      if (playerName.trim() && !isChallengeRun) {
         saveRankingToDb(mode, playerName, score.correct, totalMs);
         // デイリーは日替わり問題のため殿堂入り（日またぎ比較）の対象外
         if (mode !== 'daily') updateHallOfFame(mode, playerName, score.correct, totalMs);
@@ -1163,6 +1243,7 @@ function App() {
         onFeedback={() => setShowFeedback(true)}
         refreshKey={rankingKey}
         hofRefreshKey={hofKey}
+        challenge={challengeInfo}
       />
       {showFeedback && (
         <FeedbackModal
@@ -1195,6 +1276,27 @@ function App() {
             🔥 連続{getStreak()}日プレイ中！
           </div>
         )}
+        {/* 挑戦対戦の勝敗判定 */}
+        {isChallengeRun && challengeInfo && (() => {
+          const win  = score.correct > challengeInfo.correct ||
+                       (score.correct === challengeInfo.correct && totalMs < challengeInfo.totalMs);
+          const draw = score.correct === challengeInfo.correct && totalMs === challengeInfo.totalMs;
+          return (
+            <div style={{ borderRadius:12, padding:14, margin:'8px 0 16px', textAlign:'center',
+                          background: draw ? '#374151' : win ? '#14532d' : '#7f1d1d',
+                          border: `2px solid ${draw ? '#6b7280' : win ? '#22c55e' : '#ef4444'}` }}>
+              <div style={{ fontSize:20, fontWeight:'bold', marginBottom:4 }}>
+                {draw ? '🤝 引き分け！' : win ? '🎉 勝利！' : '😢 敗北…'}
+              </div>
+              <div style={{ fontSize:13, color:'#d1d5db' }}>
+                ⚔️ {challengeInfo.name}さん：{challengeInfo.correct}/{MAX_Q[mode]}問正解・{formatTime(challengeInfo.totalMs)}
+              </div>
+              <div style={{ fontSize:13, color:'#d1d5db' }}>
+                あなた：{score.correct}/{MAX_Q[mode]}問正解・{formatTime(totalMs)}
+              </div>
+            </div>
+          );
+        })()}
         <div style={{ fontSize:15, color:'#d1d5db', textAlign:'center', marginBottom:6 }}>
           {MAX_Q[mode]}問中&nbsp;
           <span style={{ color:'#fbbf24', fontSize:24, fontWeight:'bold' }}>{score.correct}</span>
@@ -1255,6 +1357,17 @@ function App() {
           )}
         </div>
 
+        {/* 友達に挑戦状を送る（デイリー以外） */}
+        {mode !== 'daily' && (
+          <button onClick={() => handleSendChallenge(totalMs)} style={{
+            width:'100%', padding:'12px 0', marginBottom:16, background:'#7c3aed',
+            color:'white', fontWeight:'bold', fontSize:15, borderRadius:10,
+            border:'none', cursor:'pointer'
+          }}>
+            {copied ? '✅ コピーしました！友達に送ろう' : '⚔️ 友達に挑戦状を送る（同じ問題で勝負）'}
+          </button>
+        )}
+
         <div style={{ textAlign:'center' }}>
           <button onClick={() => setShowFeedback(true)} style={{
             background:'none', border:'none', color:'#6b7280', fontSize:12, cursor:'pointer',
@@ -1292,6 +1405,11 @@ function App() {
           <div style={{ fontSize:11, color:'#6b7280', marginTop:4 }}>
             {MODE_LABELS[mode]}　/ {playerName}
           </div>
+          {isChallengeRun && challengeInfo && (
+            <div style={{ fontSize:11, color:'#a78bfa', marginTop:2 }}>
+              ⚔️ {challengeInfo.name}さんに挑戦中
+            </div>
+          )}
         </div>
         <div style={{ textAlign:'center' }}>
           <div style={{ fontSize:13, color:'#9ca3af' }}>第 {qNum} 問 / {MAX_Q[mode]} 問</div>
