@@ -339,10 +339,11 @@ function generateChiitoiHand(pool) {
 }
 
 function generateKokushiHand() {
-  const idx = rand(13);
-  const hand = KOKUSHI_TILES.filter((_, i) => i !== idx);
-  const extra = choice(KOKUSHI_TILES.filter((_, i) => i !== idx));
-  hand.push(extra);
+  // 11種＋うち2種を対子にする（=13枚・国士無双の一向聴。受け入れは欠けている2種）
+  // 旧実装は12種＋対子1つ＝テンパイを生成していたため、一向聴チェックで必ず弾かれていた
+  const missingIdx = shuffle([...KOKUSHI_TILES.keys()]).slice(0, 2);
+  const hand = KOKUSHI_TILES.filter((_, i) => !missingIdx.includes(i));
+  hand.push(...shuffle(hand).slice(0, 2));
   if (isIishanten(hand)) return hand;
   return null;
 }
