@@ -62,8 +62,10 @@ const PIN   = ['1p','2p','3p','4p','5p','6p','7p','8p','9p'];
 const SOU   = ['1s','2s','3s','4s','5s','6s','7s','8s','9s'];
 const HONOR = ['ton','nan','sha','pei','haku','hatsu','chun'];
 const ALL_TILES = [...MAN, ...PIN, ...SOU, ...HONOR];
-const MAX_Q = { normal: 5, chiitsu: 5, daily: 5 };
-const MODE_LABELS = { normal: '通常', chiitsu: '清一色', daily: 'デイリー' };
+const MAX_Q = { normal: 5, chiitsu: 5, daily: 5, hard: 5, speed: 10 };
+const MODE_LABELS = { normal: '通常', chiitsu: '清一色', daily: 'デイリー', hard: '上級', speed: 'スピード' };
+const SPEED_LIMIT_MS = 15000; // スピードモード：1問の制限時間
+const HARD_MIN_ACCEPTS = 5;   // 上級モード：受け入れ最低種類数
 const SITE_URL = 'https://mahjong-quiz.netlify.app';
 const KOKUSHI_TILES = ['1m','9m','1p','9p','1s','9s','ton','nan','sha','pei','haku','hatsu','chun'];
 
@@ -354,14 +356,18 @@ function generatePool(mode, size = 80) {
   let tries = 0;
   while (results.length < size && tries < 2000) {
     tries++;
-    const type = mode === 'chiitsu'
+    // 清一色は通常形のみ。上級も通常形のみ（国士・七対子は受け入れが少なくフィルターを通らないため）
+    const type = (mode === 'chiitsu' || mode === 'hard')
       ? 'normal'
       : choice(['normal','normal','normal','chiitoi','kokushi']);
     let hand = null;
     if (type === 'chiitoi') hand = generateChiitoiHand(pool);
     else if (type === 'kokushi') hand = generateKokushiHand();
     else hand = generateNormalHand(pool);
-    if (hand) results.push({ hand, pool });
+    if (!hand) continue;
+    // 上級モード：受け入れが多い複雑な手牌のみ採用
+    if (mode === 'hard' && calcAccepts(hand, pool).length < HARD_MIN_ACCEPTS) continue;
+    results.push({ hand, pool });
   }
   return shuffle(results);
 }
@@ -653,7 +659,7 @@ function ResultPanel({ result, hand13, onNext, isLast }) {
       background: correct ? '#14532d' : '#7f1d1d'
     }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:12, marginBottom:12 }}>
-        <div style={{ fontSize:22, fontWeight:'bold' }}>{correct ? '✅ 正解！' : '❌ 不正解'}</div>
+        <div style={{ fontSize:22, fontWeight:'bold' }}>{correct ? '✅ 正解！' : result.timedOut ? '⏰ 時間切れ' : '❌ 不正解'}</div>
         <div style={{ fontSize:13, color:'#9ca3af', background:'rgba(0,0,0,0.3)', borderRadius:6, padding:'3px 10px' }}>
           ⏱ {formatTime(timeMs)}
         </div>
@@ -785,7 +791,7 @@ function HallOfFameBoard({ mode, refreshKey }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const medals = ['🥇', '🥈', '🥉'];
-  const label = mode === 'normal' ? '通常モード' : '清一色モード';
+  const label = `${MODE_LABELS[mode]}モード`;
 
   useEffect(() => {
     setLoading(true);
@@ -910,6 +916,8 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
         {[
           ['normal',  '通常モード',  '萬子・筒子・索子・字牌'],
           ['chiitsu', '清一色モード', '1種類の数牌のみ'],
+          ['hard',    '上級モード',  '受け入れ5種類以上の難問'],
+          ['speed',   'スピードモード', '1問15秒の時間制限'],
         ].map(([m, label, desc]) => {
           return (
           <button key={m}
@@ -927,7 +935,7 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
             <div style={{ fontSize:11, color:'#bfdbfe', marginBottom:6 }}>{desc}</div>
             <div style={{ fontSize:13, color:'#93c5fd', background:'rgba(0,0,0,0.2)',
                           borderRadius:6, padding:'3px 0', display:'inline-block', width:'100%' }}>
-              全5問　スタート →
+              全{MAX_Q[m]}問　スタート →
             </div>
           </button>
           );
@@ -945,6 +953,8 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <RankingBoard mode="normal" refreshKey={refreshKey} />
           <RankingBoard mode="chiitsu" refreshKey={refreshKey} />
+          <RankingBoard mode="hard" refreshKey={refreshKey} />
+          <RankingBoard mode="speed" refreshKey={refreshKey} />
         </div>
       </div>
 
@@ -956,6 +966,8 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <HallOfFameBoard mode="normal" refreshKey={hofRefreshKey} />
           <HallOfFameBoard mode="chiitsu" refreshKey={hofRefreshKey} />
+          <HallOfFameBoard mode="hard" refreshKey={hofRefreshKey} />
+          <HallOfFameBoard mode="speed" refreshKey={hofRefreshKey} />
         </div>
       </div>
 
@@ -1058,6 +1070,20 @@ function App() {
     }, 100);
     return () => clearInterval(id);
   }, [result, loading, screen]);
+
+  // スピードモード：制限時間を超えたら時間切れ（不正解扱い）
+  // 注意: elapsedMs(表示用state)ではなくstartTimeRefから直接計算する。
+  // stateは問題切替直後に1テンポ古い値が残り、次の問題が即時間切れになるため。
+  useEffect(() => {
+    if (mode !== 'speed' || result || loading || screen !== 'quiz') return;
+    const actualElapsed = startTimeRef.current ? Date.now() - startTimeRef.current : 0;
+    if (actualElapsed >= SPEED_LIMIT_MS) {
+      const accepts = calcAccepts(hand13, availTiles);
+      setResult({ correct: false, accepts, timeMs: SPEED_LIMIT_MS, timedOut: true });
+      setScore(s => ({ correct: s.correct, total: s.total + 1 }));
+      setHandHistory(prev => [...prev, { hand: [...hand13], accepts, correct: false, timeMs: SPEED_LIMIT_MS }]);
+    }
+  }, [elapsedMs, result, loading, screen, mode]);
 
   function handlePlayerName(name) {
     setPlayerName(name);
@@ -1279,7 +1305,13 @@ function App() {
       <div style={{ marginBottom:14 }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
           <div style={{ fontSize:12, color:'#9ca3af' }}>手牌（13枚・一向聴）</div>
-          {!result && (
+          {!result && mode === 'speed' && (
+            <div style={{ fontSize:15, fontWeight:'bold', fontVariantNumeric:'tabular-nums',
+                          color: elapsedMs > SPEED_LIMIT_MS - 5000 ? '#f87171' : elapsedMs > SPEED_LIMIT_MS - 8000 ? '#fbbf24' : '#9ca3af' }}>
+              ⏰ 残り {formatTime(Math.max(0, SPEED_LIMIT_MS - elapsedMs))}
+            </div>
+          )}
+          {!result && mode !== 'speed' && (
             <div style={{ fontSize:13, fontWeight:'bold', fontVariantNumeric:'tabular-nums',
                           color: elapsedMs > 30000 ? '#f87171' : elapsedMs > 15000 ? '#fbbf24' : '#9ca3af' }}>
               ⏱ {formatTime(elapsedMs)}
