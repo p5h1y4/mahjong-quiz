@@ -10,19 +10,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>麻雀一向聴クイズ | 受け入れ牌をすべて当てよう</title>
-<meta name="description" content="麻雀の一向聴手牌から受け入れ牌をすべて答えるクイズアプリ。通常モード（萬子・筒子・索子・字牌）と清一色モードの全5問。ランキング機能付きで友達と競える。無料でプレイできます。">
-<meta name="keywords" content="麻雀,一向聴,クイズ,受け入れ牌,テンパイ,清一色,練習,上達,ランキング">
+<meta name="description" content="麻雀の一向聴手牌から受け入れ牌をすべて答えるクイズアプリ。毎日更新のデイリーチャレンジで全国のプレイヤーと競える。通常モード・清一色モードも搭載。連続記録・ランキング・Xシェア機能付き。無料でプレイできます。">
+<meta name="keywords" content="麻雀,一向聴,クイズ,受け入れ牌,テンパイ,清一色,練習,上達,ランキング,デイリーチャレンジ,毎日">
 <meta name="author" content="takebe.f">
 <link rel="canonical" href="https://mahjong-quiz.netlify.app/">
 <!-- OGP（SNSでシェアしたときの表示） -->
 <meta property="og:title" content="麻雀一向聴クイズ">
-<meta property="og:description" content="一向聴の手牌から受け入れ牌をすべて当てよう。全5問・ランキング付き。">
+<meta property="og:description" content="一向聴の手牌から受け入れ牌をすべて当てよう。毎日更新のデイリーチャレンジ・ランキング付き。">
 <meta property="og:url" content="https://mahjong-quiz.netlify.app/">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="ja_JP">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="麻雀一向聴クイズ">
-<meta name="twitter:description" content="一向聴の手牌から受け入れ牌をすべて当てよう。全5問・ランキング付き。">
+<meta name="twitter:description" content="一向聴の手牌から受け入れ牌をすべて当てよう。毎日更新のデイリーチャレンジ・ランキング付き。">
 <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4987268162814708"
      crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -62,7 +62,9 @@ const PIN   = ['1p','2p','3p','4p','5p','6p','7p','8p','9p'];
 const SOU   = ['1s','2s','3s','4s','5s','6s','7s','8s','9s'];
 const HONOR = ['ton','nan','sha','pei','haku','hatsu','chun'];
 const ALL_TILES = [...MAN, ...PIN, ...SOU, ...HONOR];
-const MAX_Q = { normal: 5, chiitsu: 5 };
+const MAX_Q = { normal: 5, chiitsu: 5, daily: 5 };
+const MODE_LABELS = { normal: '通常', chiitsu: '清一色', daily: 'デイリー' };
+const SITE_URL = 'https://mahjong-quiz.netlify.app';
 const KOKUSHI_TILES = ['1m','9m','1p','9p','1s','9s','ton','nan','sha','pei','haku','hatsu','chun'];
 
 // ===== NGワード =====
@@ -87,7 +89,18 @@ const TILE_NAMES = {
 function tileIdx(t) { return ALL_TILES.indexOf(t); }
 
 // ===== ユーティリティ =====
-function rand(n) { return Math.floor(Math.random() * n); }
+// randomSource を差し替えることで「シード付き乱数」（同じシードなら毎回同じ結果）に切替できる。
+// デイリーチャレンジで全員に同じ問題を出すために使う。
+let randomSource = Math.random;
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function rand(n) { return Math.floor(randomSource() * n); }
 function choice(arr) { return arr[rand(arr.length)]; }
 function shuffle(arr) {
   const a = [...arr];
@@ -352,11 +365,77 @@ function generatePool(mode, size = 80) {
   return shuffle(results);
 }
 
+// ===== デイリーチャレンジ（日付をシードに、全員同じ5問を生成）=====
+function generateDailyPool() {
+  randomSource = mulberry32(parseInt(todayStr(), 10));
+  const results = [];
+  let tries = 0;
+  while (results.length < MAX_Q.daily && tries < 2000) {
+    tries++;
+    const type = choice(['normal','normal','normal','chiitoi','kokushi']);
+    let hand = null;
+    if (type === 'chiitoi') hand = generateChiitoiHand(ALL_TILES);
+    else if (type === 'kokushi') hand = generateKokushiHand();
+    else hand = generateNormalHand(ALL_TILES);
+    if (hand) results.push({ hand, pool: ALL_TILES });
+  }
+  randomSource = Math.random; // 通常の乱数に戻す
+  return results;
+}
+
+// ===== デイリー結果・連続記録（localStorage）=====
+function getDailyResult() {
+  try { return JSON.parse(localStorage.getItem('mj_daily_' + todayStr())); }
+  catch(e) { return null; }
+}
+function saveDailyResult(correct, totalMs, marks) {
+  // 過去の日付の記録は掃除する
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('mj_daily_') && k !== 'mj_daily_' + todayStr()) localStorage.removeItem(k);
+  }
+  localStorage.setItem('mj_daily_' + todayStr(), JSON.stringify({ correct, totalMs, marks }));
+}
+function getStreak() {
+  try {
+    const d = JSON.parse(localStorage.getItem('mj_streak') || '{}');
+    // 今日プレイ済み、または昨日プレイしていれば連続記録は生きている
+    if (d.last === todayStr() || d.last === jstDateStr(-1)) return d.count || 0;
+    return 0;
+  } catch(e) { return 0; }
+}
+function updateStreak() {
+  const today = todayStr();
+  let d = {};
+  try { d = JSON.parse(localStorage.getItem('mj_streak') || '{}'); } catch(e) {}
+  if (d.last === today) return d.count || 1;
+  const count = d.last === jstDateStr(-1) ? (d.count || 0) + 1 : 1;
+  localStorage.setItem('mj_streak', JSON.stringify({ last: today, count }));
+  return count;
+}
+
+// ===== シェア（X投稿）=====
+function buildShareText(correct, totalMs, marks, streak) {
+  const t = todayStr();
+  const dateLabel = `${parseInt(t.slice(4,6))}/${parseInt(t.slice(6,8))}`;
+  const lines = [
+    `麻雀一向聴クイズ デイリー ${dateLabel}`,
+    `${marks} ${correct}/${MAX_Q.daily}問正解 ⏱${formatTime(totalMs)}`,
+  ];
+  if (streak >= 2) lines.push(`🔥連続${streak}日プレイ中`);
+  lines.push(SITE_URL);
+  return lines.join('\n');
+}
+function openShare(text) {
+  window.open('https://twitter.com/intent/tweet?text=' + encodeURIComponent(text), '_blank');
+}
+
 // ===== ランキング（Firestore）=====
-function todayStr() {
-  const jst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+function jstDateStr(offsetDays = 0) {
+  const jst = new Date(Date.now() + (9 * 60 * 60 + offsetDays * 24 * 60 * 60) * 1000);
   return jst.toISOString().slice(0, 10).replace(/-/g, '');
 }
+function todayStr() { return jstDateStr(0); }
 
 async function getRankingsFromDB(mode) {
   try {
@@ -611,7 +690,7 @@ function FeedbackModal({ onClose, mode, score, hand13 }) {
   function handleSend() {
     const subject = encodeURIComponent('麻雀一向聴クイズ：不具合報告');
     const infoLines = [
-      `モード: ${mode === 'chiitsu' ? '清一色' : '通常'}`,
+      `モード: ${MODE_LABELS[mode]}`,
       `スコア: ${score.correct}/${score.total}`,
     ];
     if (hand13.length > 0) {
@@ -664,7 +743,7 @@ function RankingBoard({ mode, refreshKey }) {
   const [rankings, setRankings] = useState([]);
   const [loading, setLoading] = useState(true);
   const medals = ['🥇', '🥈', '🥉'];
-  const label = mode === 'normal' ? '通常モード' : '清一色モード';
+  const label = mode === 'daily' ? '🔥 デイリーチャレンジ' : `${MODE_LABELS[mode]}モード`;
 
   useEffect(() => {
     setLoading(true);
@@ -752,6 +831,9 @@ function HallOfFameBoard({ mode, refreshKey }) {
 
 // ===== ホーム画面 =====
 function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey, hofRefreshKey }) {
+  const dailyResult = getDailyResult();
+  const streak = getStreak();
+  const blocked = containsNgWord(playerName);
   return (
     <div style={{ maxWidth:640, margin:'0 auto', padding:'12px 12px 40px', color:'white', minHeight:'100vh' }}>
       {/* タイトル */}
@@ -783,13 +865,51 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
         )}
       </div>
 
+      {/* デイリーチャレンジ */}
+      <div style={{ marginBottom:16 }}>
+        {dailyResult ? (
+          <div style={{ padding:16, borderRadius:12, background:'#1f2937',
+                        border:'2px solid #f59e0b', textAlign:'center' }}>
+            <div style={{ fontSize:16, fontWeight:'bold', color:'#fbbf24' }}>
+              🔥 今日のデイリーチャレンジ：プレイ済み
+            </div>
+            <div style={{ fontSize:14, color:'#d1d5db', marginTop:6 }}>
+              {dailyResult.marks}　{dailyResult.correct}/{MAX_Q.daily}問正解　⏱ {formatTime(dailyResult.totalMs)}
+              {streak >= 2 && <span style={{ marginLeft:8, color:'#fbbf24' }}>🔥連続{streak}日</span>}
+            </div>
+            <button
+              onClick={() => openShare(buildShareText(dailyResult.correct, dailyResult.totalMs, dailyResult.marks, streak))}
+              style={{ marginTop:10, padding:'8px 20px', borderRadius:8, border:'none',
+                       background:'#111827', color:'white', fontWeight:'bold', fontSize:13, cursor:'pointer' }}>
+              🐦 結果をXでシェア
+            </button>
+            <div style={{ fontSize:11, color:'#9ca3af', marginTop:8 }}>
+              次の問題は明日0時（日本時間）に更新されます
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => !blocked && onStart('daily')}
+            style={{ width:'100%', padding:'18px 8px', borderRadius:12,
+                     background: blocked ? '#374151' : 'linear-gradient(135deg, #ea580c, #f59e0b)',
+                     color: blocked ? '#6b7280' : 'white',
+                     border: blocked ? '2px solid #4b5563' : '2px solid #fbbf24',
+                     cursor: blocked ? 'not-allowed' : 'pointer', textAlign:'center' }}>
+            <div style={{ fontSize:18, fontWeight:'bold', marginBottom:4 }}>🔥 今日のデイリーチャレンジ</div>
+            <div style={{ fontSize:12, color: blocked ? '#6b7280' : '#fef3c7' }}>
+              全員が同じ5問に挑戦！1日1回だけ
+              {streak >= 1 && `　🔥連続${streak}日プレイ中`}
+            </div>
+          </button>
+        )}
+      </div>
+
       {/* モード選択・スタート */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:24 }}>
         {[
           ['normal',  '通常モード',  '萬子・筒子・索子・字牌'],
           ['chiitsu', '清一色モード', '1種類の数牌のみ'],
         ].map(([m, label, desc]) => {
-          const blocked = containsNgWord(playerName);
           return (
           <button key={m}
             onClick={() => !blocked && onStart(m)}
@@ -818,6 +938,9 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
         <div style={{ fontSize:14, fontWeight:'bold', color:'#e5e7eb', marginBottom:10 }}>
           🏆 本日のランキング
         </div>
+        <div style={{ marginBottom:12 }}>
+          <RankingBoard mode="daily" refreshKey={refreshKey} />
+        </div>
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
           <RankingBoard mode="normal" refreshKey={refreshKey} />
           <RankingBoard mode="chiitsu" refreshKey={refreshKey} />
@@ -833,6 +956,35 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
           <HallOfFameBoard mode="normal" refreshKey={hofRefreshKey} />
           <HallOfFameBoard mode="chiitsu" refreshKey={hofRefreshKey} />
         </div>
+      </div>
+
+      {/* 遊び方・用語解説（初心者向け＋SEO） */}
+      <div style={{ marginTop:28, background:'#1f2937', borderRadius:12, padding:18,
+                    fontSize:13, color:'#d1d5db', lineHeight:1.8 }}>
+        <div style={{ fontSize:15, fontWeight:'bold', color:'#e5e7eb', marginBottom:6 }}>📖 遊び方</div>
+        <p style={{ margin:'4px 0' }}>
+          表示される13枚の手牌は、すべて「一向聴（イーシャンテン）」の形です。
+          ツモるとテンパイになる牌＝<b>受け入れ牌</b>をすべて選んで送信してください。
+          1枚でも過不足があると不正解になります。正解数と回答スピードでランキングを競いましょう。
+        </p>
+        <div style={{ fontSize:15, fontWeight:'bold', color:'#e5e7eb', margin:'16px 0 6px' }}>🀄 一向聴（イーシャンテン）とは？</div>
+        <p style={{ margin:'4px 0' }}>
+          あと1枚有効な牌を引けばテンパイ（あがりの一歩手前）になる状態のことです。
+          麻雀では一向聴の場面が最も判断力を問われると言われており、
+          ここで受け入れを正確に数えられるかどうかが勝率に直結します。
+        </p>
+        <div style={{ fontSize:15, fontWeight:'bold', color:'#e5e7eb', margin:'16px 0 6px' }}>💡 受け入れ牌とは？</div>
+        <p style={{ margin:'4px 0' }}>
+          引くと手が一歩前進する（このクイズではテンパイになる）牌のことです。
+          受け入れの種類と枚数が多い形ほど、はやくテンパイできます。
+          実戦でも「受け入れの広い形を残す」ことが上達への近道です。
+          このクイズを毎日続ければ、受け入れ計算が反射的にできるようになります。
+        </p>
+        <div style={{ fontSize:15, fontWeight:'bold', color:'#e5e7eb', margin:'16px 0 6px' }}>🔥 デイリーチャレンジとは？</div>
+        <p style={{ margin:'4px 0' }}>
+          毎日0時（日本時間）に更新される、全プレイヤー共通の5問です。挑戦は1日1回だけ。
+          結果はXでシェアして友達と比べられます。毎日続けて連続記録を伸ばしましょう。
+        </p>
       </div>
 
       {/* 不具合報告 */}
@@ -877,7 +1029,7 @@ function App() {
     if (screen !== 'quiz') return;
     setLoading(true);
     const id = setTimeout(() => {
-      setPool(generatePool(mode));
+      setPool(mode === 'daily' ? generateDailyPool() : generatePool(mode));
       setPoolIdx(0);
       setScore({ correct: 0, total: 0 });
       setQNum(1);
@@ -912,6 +1064,7 @@ function App() {
   }
 
   function startQuiz(selectedMode) {
+    if (selectedMode === 'daily' && getDailyResult()) return; // デイリーは1日1回まで
     setMode(selectedMode);
     setScreen('quiz');
     setQuizKey(k => k + 1);
@@ -945,9 +1098,15 @@ function App() {
   function handleNext() {
     if (qNum >= MAX_Q[mode]) {
       const totalMs = handHistory.reduce((s, e) => s + e.timeMs, 0);
+      if (mode === 'daily') {
+        const marks = handHistory.map(e => e.correct ? '✅' : '❌').join('');
+        saveDailyResult(score.correct, totalMs, marks);
+        updateStreak();
+      }
       if (playerName.trim()) {
         saveRankingToDb(mode, playerName, score.correct, totalMs);
-        updateHallOfFame(mode, playerName, score.correct, totalMs);
+        // デイリーは日替わり問題のため殿堂入り（日またぎ比較）の対象外
+        if (mode !== 'daily') updateHallOfFame(mode, playerName, score.correct, totalMs);
       }
       setScreen('done');
       return;
@@ -1002,8 +1161,13 @@ function App() {
       <div style={containerStyle}>
         <div style={{ fontSize:24, fontWeight:'bold', textAlign:'center', marginBottom:4 }}>クイズ終了！</div>
         <div style={{ fontSize:13, color:'#9ca3af', textAlign:'center', marginBottom:4 }}>
-          {mode === 'chiitsu' ? '清一色' : '通常'}モード　/ {playerName}
+          {MODE_LABELS[mode]}モード　/ {playerName}
         </div>
+        {mode === 'daily' && getStreak() >= 2 && (
+          <div style={{ fontSize:14, color:'#fbbf24', textAlign:'center', marginBottom:4, fontWeight:'bold' }}>
+            🔥 連続{getStreak()}日プレイ中！
+          </div>
+        )}
         <div style={{ fontSize:15, color:'#d1d5db', textAlign:'center', marginBottom:6 }}>
           {MAX_Q[mode]}問中&nbsp;
           <span style={{ color:'#fbbf24', fontSize:24, fontWeight:'bold' }}>{score.correct}</span>
@@ -1048,10 +1212,20 @@ function App() {
             padding:'12px 0', background:'#374151', color:'white', fontWeight:'bold',
             fontSize:15, borderRadius:10, border:'none', cursor:'pointer'
           }}>ホームへ戻る</button>
-          <button onClick={() => startQuiz(mode)} style={{
-            padding:'12px 0', background:'#2563eb', color:'white', fontWeight:'bold',
-            fontSize:15, borderRadius:10, border:'none', cursor:'pointer'
-          }}>もう一度プレイ</button>
+          {mode === 'daily' ? (
+            <button onClick={() => openShare(buildShareText(
+              score.correct, totalMs,
+              handHistory.map(e => e.correct ? '✅' : '❌').join(''), getStreak()
+            ))} style={{
+              padding:'12px 0', background:'#111827', color:'white', fontWeight:'bold',
+              fontSize:15, borderRadius:10, border:'2px solid #fbbf24', cursor:'pointer'
+            }}>🐦 結果をXでシェア</button>
+          ) : (
+            <button onClick={() => startQuiz(mode)} style={{
+              padding:'12px 0', background:'#2563eb', color:'white', fontWeight:'bold',
+              fontSize:15, borderRadius:10, border:'none', cursor:'pointer'
+            }}>もう一度プレイ</button>
+          )}
         </div>
 
         <div style={{ textAlign:'center' }}>
@@ -1089,7 +1263,7 @@ function App() {
             ← ホーム
           </button>
           <div style={{ fontSize:11, color:'#6b7280', marginTop:4 }}>
-            {mode === 'chiitsu' ? '清一色' : '通常'}　/ {playerName}
+            {MODE_LABELS[mode]}　/ {playerName}
           </div>
         </div>
         <div style={{ textAlign:'center' }}>
