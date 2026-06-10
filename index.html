@@ -66,6 +66,40 @@ const MAX_Q = { normal: 5, chiitsu: 5, daily: 5, hard: 5, speed: 10 };
 const MODE_LABELS = { normal: '通常', chiitsu: '清一色', daily: 'デイリー', hard: '上級', speed: 'スピード' };
 const SPEED_LIMIT_MS = 15000; // スピードモード：1問の制限時間
 const HARD_MIN_ACCEPTS = 5;   // 上級モード：受け入れ最低種類数
+
+// ===== 収益化設定 =====
+// AdSense審査の承認後、管理画面で「ディスプレイ広告」ユニットを作成し、
+// そのスロットID（数字）を下に記入すると広告が表示されるようになります。
+// 空文字のままなら何も表示されません（レイアウトも崩れません）。
+const ADSENSE = {
+  client: 'ca-pub-4987268162814708',
+  slots: {
+    home:   '',  // ホーム画面下部
+    result: '',  // クイズ結果画面下部
+  },
+};
+
+// おすすめ本（Amazonアソシエイト登録後、urlをアフィリエイトリンクに差し替え）
+const AFFILIATE_BOOKS = [
+  {
+    title: 'ウザク式麻雀学習 牌効率',
+    author: 'G・ウザク',
+    desc: '受け入れ計算の決定版。このクイズの実力を伸ばすのに最適な一冊',
+    url: 'https://www.amazon.co.jp/s?k=' + encodeURIComponent('ウザク式麻雀学習 牌効率'),
+  },
+  {
+    title: '麻雀 定石「何切る」301選',
+    author: 'G・ウザク',
+    desc: '一向聴・テンパイの判断力を問題形式で鍛えられる定番問題集',
+    url: 'https://www.amazon.co.jp/s?k=' + encodeURIComponent('麻雀 定石 何切る 301選'),
+  },
+  {
+    title: '勝つための現代麻雀技術論',
+    author: 'ネマタ（著）・福地誠（編）',
+    desc: '牌効率から押し引きまで、現代麻雀戦術の体系的な教科書',
+    url: 'https://www.amazon.co.jp/s?k=' + encodeURIComponent('勝つための現代麻雀技術論'),
+  },
+];
 const SITE_URL = 'https://mahjong-quiz.netlify.app';
 const KOKUSHI_TILES = ['1m','9m','1p','9p','1s','9s','ton','nan','sha','pei','haku','hatsu','chun'];
 
@@ -872,6 +906,57 @@ function HallOfFameBoard({ mode, refreshKey }) {
   );
 }
 
+// ===== 広告枠（スロットID未設定なら何も表示しない）=====
+function AdSlot({ name }) {
+  const slot = ADSENSE.slots[name];
+  const insRef = useRef(null);
+  useEffect(() => {
+    if (!slot || !insRef.current) return;
+    try { (window.adsbygoogle = window.adsbygoogle || []).push({}); } catch(e) {}
+  }, [slot]);
+  if (!slot) return null;
+  return (
+    <div style={{ margin:'16px 0', textAlign:'center' }}>
+      <div style={{ fontSize:10, color:'#4b5563', marginBottom:2 }}>スポンサーリンク</div>
+      <ins ref={insRef}
+        className="adsbygoogle"
+        style={{ display:'block' }}
+        data-ad-client={ADSENSE.client}
+        data-ad-slot={slot}
+        data-ad-format="auto"
+        data-full-width-responsive="true" />
+    </div>
+  );
+}
+
+// ===== おすすめ本セクション =====
+function BookSection() {
+  return (
+    <div style={{ marginTop:24, background:'#1f2937', borderRadius:12, padding:18 }}>
+      <div style={{ fontSize:15, fontWeight:'bold', color:'#e5e7eb', marginBottom:4 }}>
+        📚 麻雀が強くなるおすすめ本
+      </div>
+      <div style={{ fontSize:10, color:'#6b7280', marginBottom:12 }}>
+        ※紹介リンクは広告（アフィリエイト）を含む場合があります
+      </div>
+      <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+        {AFFILIATE_BOOKS.map((book, i) => (
+          <a key={i} href={book.url} target="_blank" rel="noopener sponsored"
+             style={{ display:'block', background:'#374151', borderRadius:10, padding:'12px 14px',
+                      textDecoration:'none', border:'1px solid #4b5563' }}>
+            <div style={{ fontSize:14, fontWeight:'bold', color:'#93c5fd', marginBottom:2 }}>
+              {book.title}
+            </div>
+            <div style={{ fontSize:11, color:'#9ca3af', marginBottom:4 }}>{book.author}</div>
+            <div style={{ fontSize:12, color:'#d1d5db' }}>{book.desc}</div>
+            <div style={{ fontSize:11, color:'#fbbf24', marginTop:6 }}>Amazonで見る →</div>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ===== ホーム画面 =====
 function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey, hofRefreshKey, challenge }) {
   const dailyResult = getDailyResult();
@@ -1057,6 +1142,12 @@ function HomeScreen({ playerName, onNameChange, onStart, onFeedback, refreshKey,
           結果はXでシェアして友達と比べられます。毎日続けて連続記録を伸ばしましょう。
         </p>
       </div>
+
+      {/* おすすめ本 */}
+      <BookSection />
+
+      {/* 広告枠（AdSense承認後に表示） */}
+      <AdSlot name="home" />
 
       {/* 不具合報告 */}
       <div style={{ textAlign:'center', marginTop:24, display:'flex', justifyContent:'center', gap:16 }}>
@@ -1367,6 +1458,9 @@ function App() {
             {copied ? '✅ コピーしました！友達に送ろう' : '⚔️ 友達に挑戦状を送る（同じ問題で勝負）'}
           </button>
         )}
+
+        {/* 広告枠（AdSense承認後に表示） */}
+        <AdSlot name="result" />
 
         <div style={{ textAlign:'center' }}>
           <button onClick={() => setShowFeedback(true)} style={{
